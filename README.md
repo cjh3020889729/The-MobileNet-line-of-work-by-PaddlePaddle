@@ -3,6 +3,7 @@ The MobileNet line of work by PaddlePaddle
 
 - 模型复现源码: `mobilenet.py`
 
+    - `done time`: `2021-11-12`
     - 构建模型接口说明:
  
         - MobileNet: 构建模型的基类
