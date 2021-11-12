@@ -113,3 +113,21 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNetV3_Small_Small`: 构建**最小**MobileNetV3_Small的函数
 
 - **<font color="red">Mobile-Former</font>** 模型复现源码: `mobileformer.py` -- To Do
+    <table>
+        <tr>
+            <td align="center">MF激活函数</td>
+            <td align="center">MF性能</td>
+        </tr>
+        <tr>
+            <td align="center"><img src="./images/mf_dy_relu.png" border=0></td>
+            <td align="center"><img src="./images/mf_performance.png" border=0></td>
+        </tr>
+    <tr>
+            <td align="center">MF架构</td>
+            <td align="center">MF组网配置</td>
+        </tr>
+        <tr>
+            <td align="center"><img src="./images/mf_arch.png" border=0></td>
+            <td align="center"><img src="./images/mf_config.png" border=0></td>
+        </tr>
+    </table>
