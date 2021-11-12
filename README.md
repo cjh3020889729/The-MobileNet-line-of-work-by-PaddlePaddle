@@ -4,7 +4,7 @@ The MobileNet line of work by PaddlePaddle
 - **<font color="red">MobileNet(V1)</font>** 模型复现源码: <a href="./mobilenet.py">`mobilenet.py`</a>
     <table>
         <tr>
-            <td align="center">V1网络结果</td>
+            <td align="center">V1网络结构</td>
             <td align="center">深度分离卷积</td>
         </tr>
         <tr>
@@ -23,10 +23,16 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNet_Small`: 构建**最小**MobileNet的函数
 
 - **<font color="red">MobileNetV2</font>** 模型复现源码: <a href="./mobilenetV2.py">`mobilenetV2.py`</a>
-    <table><tr>
-        <td><img src="./images/v2_config.png" border=0></td>
-        <td><img src="./images/v2_res.png" border=0></td>
-    </tr></table>
+    <table>
+        <tr>
+            <td align="center">V2网络结构</td>
+            <td align="center">倒残差结构</td>
+        </tr>
+        <tr>
+            <td align="center"><img src="./images/v2_config.png" border=0></td>
+            <td align="center"><img src="./images/v2_res.png" border=0></td>
+        </tr>
+    </table>
     
     - `done date`: `2021-11-12`
     - 构建模型接口说明:
@@ -39,14 +45,24 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNetV2_Small`: 构建**最小**MobileNetV2的函数
 
 - **<font color="red">MobileNetV3</font>** 模型复现源码: `mobilenetV3.py` -- To Do
-    <table><tr>
-        <td><img src="./images/v3_act.png" border=0></td>
-        <td><img src="./images/se_attention.png" border=0></td>
-    </tr></table>
-    <table><tr>
-        <td><img src="./images/v3_large_config.png" border=0></td>
-        <td><img src="./images/v3_small_config.png" border=0></td>
-    </tr></table>
+    <table>
+        <tr>
+            <td align="center">V3激活函数</td>
+            <td align="center">V3注意力SE模块</td>
+        </tr>
+        <tr>
+            <td align="center"><img src="./images/v3_act.png" border=0></td>
+            <td align="center"><img src="./images/se_attention.png" border=0></td>
+        </tr>
+    <tr>
+            <td align="center">V3-Large结构</td>
+            <td align="center">V3-Small结构</td>
+        </tr>
+        <tr>
+            <td align="center"><img src="./images/v3_large_config.png" border=0></td>
+            <td align="center"><img src="./images/v3_small_config.png" border=0></td>
+        </tr>
+    </table>
 
 
 - **<font color="red">Mobile-Former</font>** 模型复现源码: `mobileformer.py` -- To Do
