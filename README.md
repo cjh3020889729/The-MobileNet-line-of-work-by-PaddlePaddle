@@ -1,7 +1,7 @@
 # The-MobileNet-line-of-work-by-PaddlePaddle
 The MobileNet line of work by PaddlePaddle
 
-- <font color="red">MobileNet(V1)</font>模型复现源码: `mobilenet.py`
+- <font color="red">MobileNet(V1)</font> 模型复现源码: `mobilenet.py`
     <table><tr>
         <td><img src="./images/v1_config.png" border=0></td>
         <td><img src="./images/v1_dp_conv.png" border=0></td>
@@ -16,7 +16,7 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNet_Mid`: 构建**中等**MobileNet的函数
         - `MobileNet_Small`: 构建**最小**MobileNet的函数
 
-- <font color="red">MobileNetV2</font>模型复现源码: `mobilenetV2.py`
+- <font color="red">MobileNetV2</font> 模型复现源码: `mobilenetV2.py`
     <table><tr>
         <td><img src="./images/v2_config.png" border=0></td>
         <td><img src="./images/v2_res.png" border=0></td>
@@ -32,6 +32,6 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNetV2_Mid`: 构建**中等**MobileNetV2的函数
         - `MobileNetV2_Small`: 构建**最小**MobileNetV2的函数
 
-- <font color="red">MobileNetV3</font>模型复现源码: `mobilenetV3.py` -- To Do
+- <font color="red">MobileNetV3</font> 模型复现源码: `mobilenetV3.py` -- To Do
 
-- <font color="red">Mobile-Former</font>模型复现源码: `mobileformer.py` -- To Do
+- <font color="red">Mobile-Former</font> 模型复现源码: `mobileformer.py` -- To Do
