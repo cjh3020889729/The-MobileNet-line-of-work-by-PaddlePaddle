@@ -131,3 +131,25 @@ The MobileNet line of work by PaddlePaddle
             <td align="center"><img src="./images/mf_config.png" border=0></td>
         </tr>
     </table>
+
+    - `done date`: `2021-11-12`
+    - 模型结构(组网)类型:
+    
+        - `Identify`: 占位符--不做任何操作, x=f(x)
+        - `DepthWise_Conv`: 深度卷积--每个通道分配单个卷积核并输出，in_channels=out_channels
+        - `PointWise_Conv`: 逐点卷积--1x1卷积
+        - `SEBlock`: SE Attention计算模块--channels注意力
+        - `MLP`: 多层感知机
+        - `DY_ReLU`: 动态ReLU
+        - `Mobile`: MF中的Mobile卷积部分
+        - `Attention`: 简单的普通注意力机制
+        - `DropPath`: Path丢弃
+        - `Former`: MF中的Former纯注意力部分
+        - `ToFormer_Bridge`: 从Mobile到Former的桥
+        - `ToMobile_Bridge`: 从Mobile到Former的桥
+        - `CombineBlock`(未完成): 组合Mobile + Bridges + Former
+        - `MobileFormer`(未完成): 网络实现
+    
+    - 构建模型接口说明:
+
+
