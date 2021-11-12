@@ -3,8 +3,8 @@ The MobileNet line of work by PaddlePaddle
 
 - MobileNet(V1)模型复现源码: `mobilenet.py`
     <table><tr>
-        <td><img src=pic1.jpg border=0></td>
-        <td><img src=pic2.jpg border=0></td>
+        <td><img src="./images/v1_config.png" border=0></td>
+        <td><img src="./images/v1_dp_conv.png" border=0></td>
     </tr></table>
     
     - `done time`: `2021-11-12`
@@ -18,8 +18,8 @@ The MobileNet line of work by PaddlePaddle
 
 - MobileNetV2模型复现源码: `mobilenetV2.py`
     <table><tr>
-        <td><img src=pic1.jpg border=0></td>
-        <td><img src=pic2.jpg border=0></td>
+        <td><img src="./images/v2_config.png" border=0></td>
+        <td><img src="./images/v2_res.png" border=0></td>
     </tr></table>
     
     - `done time`: `2021-11-12`
