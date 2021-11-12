@@ -4,8 +4,8 @@ The MobileNet line of work by PaddlePaddle
 - **<font color="red">MobileNet(V1)</font>** 模型复现源码: <a href="./mobilenet.py">`mobilenet.py`</a>
     <table>
         <tr>
-            <td align="center">`V1网络结构`</td>
-            <td align="center">`深度分离卷积`</td>
+            <td align="center">V1网络结构</td>
+            <td align="center">深度分离卷积</td>
         </tr>
         <tr>
             <td align="center"><img src="./images/v1_config.png" border=0></td>
