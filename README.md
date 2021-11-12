@@ -2,10 +2,16 @@
 The MobileNet line of work by PaddlePaddle
 
 - **<font color="red">MobileNet(V1)</font>** 模型复现源码: <a href="./mobilenet.py">`mobilenet.py`</a>
-    <table><tr>
-        <td><font text-align="center">V1网络结构</font><img src="./images/v1_config.png" border=0></td>
-        <td><font text-align="center">深度分离卷积</font><img src="./images/v1_dp_conv.png" border=0></td>
-    </tr></table>
+    <table>
+        <tr>
+            <td>V1网络结果</td>
+            <td>深度分离卷积</td>
+        </tr>
+        <tr>
+            <td><img src="./images/v1_config.png" border=0></td>
+            <td><img src="./images/v1_dp_conv.png" border=0></td>
+        </tr>
+    </table>
     
     - `done date`: `2021-11-12`
     - 构建模型接口说明:
