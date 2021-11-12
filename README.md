@@ -44,7 +44,7 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNetV2_Mid`: 构建**中等**MobileNetV2的函数
         - `MobileNetV2_Small`: 构建**最小**MobileNetV2的函数
 
-- **<font color="red">MobileNetV3</font>** 模型复现源码: `mobilenetV3.py` -- To Do
+- **<font color="red">MobileNetV3</font>** 模型复现源码: <a href="./mobilenetV3.py">`mobilenetV3.py`</a>
     <table>
         <tr>
             <td align="center">V3激活函数</td>
@@ -63,6 +63,21 @@ The MobileNet line of work by PaddlePaddle
             <td align="center"><img src="./images/v3_small_config.png" border=0></td>
         </tr>
     </table>
-
+    
+    - `done date`: `2021-11-12`
+    - 构建模型接口说明:
+ 
+        - `MobileNetV3_Large`: 构建Large模型的基类
+        - `MobileNetV3_Large_for_224`: 构建**最适合224大小图像**的MobileNetV3_Large的函数
+        - `MobileNetV3_Large_Base`: 构建**基础**MobileNetV3_Large的函数
+        - `MobileNetV3_Large_0_75`: 构建**较大**MobileNetV3_Large的函数
+        - `MobileNetV3_Large_Mid`: 构建**中等**MobileNetV3_Large的函数
+        - `MobileNetV3_Large_Small`: 构建**最小**MobileNetV3_Large的函数
+        - `MobileNetV3_Small`: 构建Small模型的基类
+        - `MobileNetV3_Small_for_224`: 构建**最适合224大小图像**的MobileNetV3_Small的函数
+        - `MobileNetV3_Small_Base`: 构建**基础**MobileNetV3_Small的函数
+        - `MobileNetV3_Small_0_75`: 构建**较大**MobileNetV3_Small的函数
+        - `MobileNetV3_Small_Mid`: 构建**中等**MobileNetV3_Small的函数
+        - `MobileNetV3_Small_Small`: 构建**最小*MobileNetV3_Small的函数
 
 - **<font color="red">Mobile-Former</font>** 模型复现源码: `mobileformer.py` -- To Do
