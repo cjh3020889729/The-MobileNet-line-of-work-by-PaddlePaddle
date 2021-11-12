@@ -78,6 +78,6 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNetV3_Small_Base`: 构建**基础**MobileNetV3_Small的函数
         - `MobileNetV3_Small_0_75`: 构建**较大**MobileNetV3_Small的函数
         - `MobileNetV3_Small_Mid`: 构建**中等**MobileNetV3_Small的函数
-        - `MobileNetV3_Small_Small`: 构建**最小*MobileNetV3_Small的函数
+        - `MobileNetV3_Small_Small`: 构建**最小**MobileNetV3_Small的函数
 
 - **<font color="red">Mobile-Former</font>** 模型复现源码: `mobileformer.py` -- To Do
