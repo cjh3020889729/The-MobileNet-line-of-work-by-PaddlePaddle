@@ -14,6 +14,15 @@ The MobileNet line of work by PaddlePaddle
     </table>
     
     - `done date`: `2021-11-12`
+    - 模型结构(组网)类型:
+    
+        - DepthWise_Conv: 深度卷积--每个通道分配单个卷积核并输出，in_channels=out_channels
+        - PointWise_Conv: 逐点卷积--1x1卷积
+        - Depth_Separ_Conv: 深度可分离卷积--`深度卷积`+`逐点卷积`, 输出经过relu，非线性输出
+        - Stem: 渐入层--进行第一次图像的特征提取，空间信息转换
+        - Classifier_Head: 分类头--输出分类结果
+        - MobileNet: 组网实现
+
     - 构建模型接口说明:
  
         - `MobileNet`: 构建模型的基类
@@ -35,6 +44,16 @@ The MobileNet line of work by PaddlePaddle
     </table>
     
     - `done date`: `2021-11-12`
+    - 模型结构(组网)类型:
+    
+        - DepthWise_Conv: 深度卷积--每个通道分配单个卷积核并输出，in_channels=out_channels
+        - PointWise_Conv: 逐点卷积--1x1卷积
+        - Linear_Depth_Separ_Conv: 深度可分离卷积--`深度卷积`+`逐点卷积`, 输出不经过relu等，线性输出
+        - BottleNeck: 倒残差模块--低密度空间残差
+        - Stem: 渐入层--进行第一次图像的特征提取，空间信息转换
+        - Classifier_Head: 分类头--输出分类结果
+        - MobileNetV2: 组网实现
+    
     - 构建模型接口说明:
  
         - `MobileNetV2`: 构建模型的基类
@@ -65,6 +84,19 @@ The MobileNet line of work by PaddlePaddle
     </table>
     
     - `done date`: `2021-11-12`
+    - 模型结构(组网)类型:
+    
+        - Identify: 占位符--不做任何操作, x=f(x)
+        - DepthWise_Conv: 深度卷积--每个通道分配单个卷积核并输出，in_channels=out_channels
+        - PointWise_Conv: 逐点卷积--1x1卷积
+        - Linear_Depth_Separ_Conv: 深度可分离卷积--`深度卷积`+`逐点卷积`, 输出不经过relu等，线性输出
+        - SEBlock: SE Attention计算模块--channels注意力
+        - BottleNeck: 倒残差模块--低密度空间残差
+        - Stem: 渐入层--进行第一次图像的特征提取，空间信息转换
+        - Classifier_Head: 分类头--输出分类结果
+        - MobileNetV3_Large: Large结构的组网实现
+        - MobileNetV3_Small: Small结构的组网实现
+    
     - 构建模型接口说明:
  
         - `MobileNetV3_Large`: 构建Large模型的基类
