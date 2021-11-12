@@ -7,7 +7,7 @@ The MobileNet line of work by PaddlePaddle
         <td><img src="./images/v1_dp_conv.png" border=0></td>
     </tr></table>
     
-    - `done time`: `2021-11-12`
+    - `done date`: `2021-11-12`
     - 构建模型接口说明:
  
         - `MobileNet`: 构建模型的基类
@@ -22,7 +22,7 @@ The MobileNet line of work by PaddlePaddle
         <td><img src="./images/v2_res.png" border=0></td>
     </tr></table>
     
-    - `done time`: `2021-11-12`
+    - `done date`: `2021-11-12`
     - 构建模型接口说明:
  
         - `MobileNetV2`: 构建模型的基类
