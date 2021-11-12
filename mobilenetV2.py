@@ -306,7 +306,7 @@ class MobileNetV2(nn.Layer):
 
 
 def MobileNetV2_for_224(num_classes,
-                   in_channels):
+                        in_channels):
     """构建最适合224大小图像的MobileNetV2
     """
     return MobileNetV2(num_classes=num_classes,
@@ -315,7 +315,7 @@ def MobileNetV2_for_224(num_classes,
 
 
 def MobileNetV2_Base(num_classes,
-                   in_channels):
+                     in_channels):
     """构建基础(大型)MobileNetV2
     """
     return MobileNetV2(num_classes=num_classes,
@@ -323,7 +323,7 @@ def MobileNetV2_Base(num_classes,
                        alpha=1.0)
 
 def MobileNetV2_0_75(num_classes,
-                   in_channels):
+                     in_channels):
     """构建较大MobileNetV2
     """
     return MobileNetV2(num_classes=num_classes,
@@ -331,7 +331,7 @@ def MobileNetV2_0_75(num_classes,
                        alpha=0.75)
 
 def MobileNetV2_Mid(num_classes,
-                   in_channels):
+                    in_channels):
     """构建中等MobileNetV2
     """
     return MobileNetV2(num_classes=num_classes,
@@ -339,7 +339,7 @@ def MobileNetV2_Mid(num_classes,
                        alpha=0.5)
 
 def MobileNetV2_Small(num_classes,
-                   in_channels):
+                      in_channels):
     """构建最小MobileNetV2
     """
     return MobileNetV2(num_classes=num_classes,
