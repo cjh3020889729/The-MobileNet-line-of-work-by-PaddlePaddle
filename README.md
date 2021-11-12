@@ -2,7 +2,11 @@
 The MobileNet line of work by PaddlePaddle
 
 - MobileNet(V1)模型复现源码: `mobilenet.py`
-
+    <table><tr>
+        <td><img src=pic1.jpg border=0></td>
+        <td><img src=pic2.jpg border=0></td>
+    </tr></table>
+    
     - `done time`: `2021-11-12`
     - 构建模型接口说明:
  
@@ -13,7 +17,11 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNet_Small`: 构建**最小**MobileNet的函数
 
 - MobileNetV2模型复现源码: `mobilenetV2.py`
-
+    <table><tr>
+        <td><img src=pic1.jpg border=0></td>
+        <td><img src=pic2.jpg border=0></td>
+    </tr></table>
+    
     - `done time`: `2021-11-12`
     - 构建模型接口说明:
  
