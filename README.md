@@ -33,5 +33,14 @@ The MobileNet line of work by PaddlePaddle
         - `MobileNetV2_Small`: 构建**最小**MobileNetV2的函数
 
 - **<font color="red">MobileNetV3</font>** 模型复现源码: `mobilenetV3.py` -- To Do
+    <table><tr>
+        <td><img src="./images/v3_act.png" border=0></td>
+        <td><img src="./images/se_attention.png" border=0></td>
+    </tr></table>
+    <table><tr>
+        <td><img src="./images/v3_large_config.png" border=0></td>
+        <td><img src="./images/v3_small_config.png" border=0></td>
+    </tr></table>
+
 
 - **<font color="red">Mobile-Former</font>** 模型复现源码: `mobileformer.py` -- To Do
