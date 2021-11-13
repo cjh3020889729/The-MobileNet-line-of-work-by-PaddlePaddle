@@ -2,6 +2,10 @@ import paddle
 from paddle import nn
 from paddle.nn import functional as F
 
+from former_config import MobileFormer_Config
+
+
+
 class Identify(nn.Layer):
     """占位符 -- x = f(x)
     """
@@ -970,32 +974,33 @@ class Classifier_Head(nn.Layer):
 class Basic_Block(nn.Layer):
     """MobileFormer最小基础模块
         Params Info:
-            embed_dims: 
-            in_channels: 
-            out_channels: 
-            num_head: 
-            mlp_ratio: 
-            q_bias: 
-            kv_bias: 
-            qkv_bias: 
-            dropout_rate: 
-            droppath_rate: 
-            attn_dropout_rate: 
-            mlp_dropout_rate: 
-            t: 
-            m: 
-            kernel_size: 
-            stride: 
-            padding: 
-            k: 
-            use_mlp: 
-            coefs: 
-            const: 
-            dy_reduce: 
-            add_pointwise_conv: 
-            pointwise_conv_channels: 
-            act: 
-            norm: 
+            embed_dims: 嵌入维度
+            in_channels: 输入通道数
+            out_channels: 输出通道数
+            num_head: 注意力头数, default:1
+            mlp_ratio: MLP隐藏特征伸缩比例, default:2
+            q_bias: Mobile-->Former是否使用bias, default:True
+            kv_bias: Former-->Mobile是否使用bias, default:True
+            qkv_bias: Former是否使用bias, default:True
+            dropout_rate: 注意力结果丢弃率, default:0.
+            droppath_rate: DropPath多分支丢弃率, default:0.
+            attn_dropout_rate: 注意力分布丢弃率, default:0.
+            mlp_dropout_rate: 多层感知机丢弃率, default:0.
+            t: 深度可分离卷积中隐藏通道伸缩比例, default:1
+            m: Token序列长度, default:6
+            kernel_size: 卷积核大小, default:3
+            stride: 步长大小, default:1
+            padding: 填充大小, default:0
+            k: 动态ReLU参数个数, default:2
+            use_mlp: 计算动态ReLU的动态参数时是否使用MLP进行映射, default:False
+            coefs: 动态参数系数, default:[1.0, 0.5]
+            const: 动态参数初始常量, default:[1.0, 0.0]
+            dy_reduce: 动态参数映射隐藏特征伸缩比例, default:6
+            add_pointwise_conv: 是否额外添加1x1卷积, default:False
+            pointwise_conv_channels: 额外卷积拓展通道数, default:None,
+                                     若add_pointwise_conv不为False，则该值应该被填充
+            act: 激活函数 -- nn.Layer or nn.functional
+            norm: 归一化层 -- nn.LayerNorm
         Forward Tips:
             - ToFormer_Bridge --> Former --> Mobile --> ToMobile_Bridge
     """
@@ -1027,9 +1032,29 @@ class Basic_Block(nn.Layer):
                  act=nn.GELU,
                  norm=nn.LayerNorm):
         super(Basic_Block, self).__init__()
-        self.in_channels = in_channels
         self.embed_dims = embed_dims
-
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.num_head = num_head
+        self.mlp_ratio = mlp_ratio
+        self.q_bias = q_bias
+        self.kv_bias = kv_bias
+        self.qkv_bias = qkv_bias
+        self.dropout_rate = dropout_rate
+        self.droppath_rate = droppath_rate
+        self.attn_dropout_rate = attn_dropout_rate
+        self.mlp_dropout_rate = mlp_dropout_rate
+        self.t = t
+        self.m = m
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.k = k
+        self.use_mlp = use_mlp
+        self.coefs = coefs
+        self.const = const
+        self.dy_reduce = dy_reduce
+        self.use_mlp = use_mlp
         self.add_pointwise_conv = add_pointwise_conv
         self.pointwise_conv_channels = pointwise_conv_channels
 
@@ -1094,3 +1119,157 @@ class Basic_Block(nn.Layer):
 
         return output_x, z
 
+
+class MobileFormer(nn.Layer):
+    """MobileFormer组网实现
+    """
+    def __init__(self,
+                 num_classes=1000,
+                 in_channels=3,
+                 model_type='base',
+                 alpha=1.0):
+        super(MobileFormer, self).__init__()
+        self.num_classes = num_classes
+        self.in_channels = in_channels
+        self.model_type = model_type
+        self.alpha = alpha
+
+        self.net_configs = MobileFormer_Config(model_type=model_type, alpha=alpha)
+        self.build_model() # 构建模型基本配置
+
+        self.global_token = self.create_parameter(shape=[1, self.m, self.embed_dims],
+                                dtype='float32', attr=nn.initializer.KaimingUniform())
+
+        self.stem = self.create_stem()
+
+        self.bneck_lite = self.create_bneck_lite()
+
+        self.mf_blocks = self.create_mf_blocks()
+
+        self.head = self.create_head()
+
+    def build_model(self):
+        """构建模型的基本配置
+        """
+        base_cfg = self.net_configs['base_cfg']
+        self.m = base_cfg[0]
+        self.embed_dims = base_cfg[1]
+        self.num_head = base_cfg[2]
+        self.mlp_ratio = base_cfg[3]
+        self.q_bias = base_cfg[4]
+        self.kv_bias = base_cfg[5]
+        self.qkv_bias = base_cfg[6]
+        self.dropout_rate = base_cfg[7]
+        self.droppath_rate = base_cfg[8]
+        self.attn_dropout_rate = base_cfg[9]
+        self.mlp_dropout_rate = base_cfg[10]
+        self.k = base_cfg[11]
+        self.use_mlp = base_cfg[12]
+        self.coefs = base_cfg[13]
+        self.const = base_cfg[14]
+        self.dy_reduce = base_cfg[15]
+
+    def create_stem(self):
+        """构建渐入层
+        """
+        return Stem(in_channels=self.net_configs['stem'][0],
+                    out_channels=self.net_configs['stem'][1],
+                    kernel_size=self.net_configs['stem'][2],
+                    stride=self.net_configs['stem'][3],
+                    padding=self.net_configs['stem'][4],
+                    act=self.net_configs['stem'][5])
+
+    def create_bneck_lite(self):
+        """构建BottleNeck-Lite结构
+        """
+        return Lite_BottleNeck(in_channels=self.net_configs['bneck-lite'][0],
+                               hidden_channels=self.net_configs['bneck-lite'][1],
+                               out_channels=self.net_configs['bneck-lite'][2],
+                               expands=self.net_configs['bneck-lite'][3],
+                               kernel_size=self.net_configs['bneck-lite'][4],
+                               stride=self.net_configs['bneck-lite'][5],
+                               padding=self.net_configs['bneck-lite'][6],
+                               act=self.net_configs['bneck-lite'][7]
+                              )
+
+
+    def create_mf_blocks(self):
+        """构建MF块
+        """
+        blocks = []
+        blocks_config = self.net_configs['MF']
+        blocks_depth = len(blocks_config)
+
+        for i in range(blocks_depth):
+            blocks.append(
+                Basic_Block(embed_dims=self.embed_dims,
+                            in_channels=blocks_config[i][0],
+                            out_channels=blocks_config[i][1],
+                            num_head=self.num_head,
+                            mlp_ratio=self.mlp_ratio,
+                            q_bias=self.q_bias,
+                            kv_bias=self.kv_bias,
+                            qkv_bias=self.qkv_bias,
+                            dropout_rate=self.dropout_rate,
+                            droppath_rate=self.droppath_rate,
+                            attn_dropout_rate=self.attn_dropout_rate,
+                            mlp_dropout_rate=self.mlp_dropout_rate,
+                            t=blocks_config[i][2],
+                            m=self.m,
+                            kernel_size=blocks_config[i][3],
+                            stride=blocks_config[i][4],
+                            padding=blocks_config[i][5],
+                            k=self.k,
+                            use_mlp=self.use_mlp,
+                            coefs=self.coefs,
+                            const=self.const,
+                            dy_reduce=self.dy_reduce,
+                            add_pointwise_conv=blocks_config[i][6],
+                            pointwise_conv_channels=blocks_config[i][7],
+                            act=blocks_config[i][8],
+                            norm=blocks_config[i][9])
+            )
+
+        blocks = nn.LayerList(blocks)
+
+        return blocks
+
+
+    def create_head(self):
+        """创建分类头
+        """
+        return Classifier_Head(in_channels=self.net_configs['head'][0],
+                               embed_dims=self.embed_dims,
+                               num_classes=self.num_classes,
+                               head_type=self.net_configs['head'][1],
+                               act=self.net_configs['head'][2]
+                              )
+
+    def create_token(self, B):
+        """为Batch数据构建合适的Token序列张量
+        """
+        z_token = paddle.concat([self.global_token]*B)
+        return z_token
+
+
+    def forward(self, inputs):
+        z_token = self.create_token(inputs.shape[0])
+
+        x = self.stem(inputs)
+        x = self.bneck_lite(x)
+
+        for b in self.mf_blocks:
+            x, z_token = b(x, z_token)
+        
+        x = self.head(x, z_token)
+
+        return x
+
+
+# if __name__ == "__main__":
+#     data = paddle.empty((1, 3, 224, 224))
+#     model = MobileFormer(num_classes=2, in_channels=3)
+
+#     y_pred = model(data)
+
+#     print(y_pred.shape)
