@@ -153,5 +153,10 @@ The MobileNet line of work by PaddlePaddle
         - `MobileFormer`: 网络实现--目前仅实现Base版本
     
     - 构建模型接口说明:
+    
+        - `MobileFormer`: 构建MobileFormer模型的基类
+        - `MobileFormer_Base`: 构建**基础**MobileFormer的函数
+        - other to do
+
 
 
