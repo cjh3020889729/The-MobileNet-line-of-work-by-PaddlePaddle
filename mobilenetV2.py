@@ -301,7 +301,7 @@ class MobileNetV3_Large(nn.Layer):
             self.mb_blocks.append(
                 BottleNeck(
                     in_channels=self.net_channels[i][0],
-                    out_channles=self.net_channels[i][1],
+                    out_channels=self.net_channels[i][1],
                     t=self.net_channels[i][5],
                     n=self.net_channels[i][6],
                     kernel_size=self.net_channels[i][2],
