@@ -132,7 +132,7 @@ The MobileNet line of work by PaddlePaddle
         </tr>
     </table>
 
-    - `done date`: `2021-11-12`
+    - `done date`: `2021-11-13`
     - 模型结构(组网)类型:
     
         - `Identify`: 占位符--不做任何操作, x=f(x)
@@ -150,7 +150,7 @@ The MobileNet line of work by PaddlePaddle
         - `Lite_BottleNeck`: 轻量BottleNeck
         - `Classifier_Head`: 分类头
         - `Basic_Block`: MobileFormer最小实现单元
-        - `MobileFormer`(未完成): 网络实现
+        - `MobileFormer`: 网络实现--目前仅实现Base版本
     
     - 构建模型接口说明:
 
