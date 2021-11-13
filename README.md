@@ -138,7 +138,6 @@ The MobileNet line of work by PaddlePaddle
         - `Identify`: 占位符--不做任何操作, x=f(x)
         - `DepthWise_Conv`: 深度卷积--每个通道分配单个卷积核并输出，in_channels=out_channels
         - `PointWise_Conv`: 逐点卷积--1x1卷积
-        - `SEBlock`: SE Attention计算模块--channels注意力
         - `MLP`: 多层感知机
         - `DY_ReLU`: 动态ReLU
         - `Mobile`: MF中的Mobile卷积部分
@@ -147,7 +146,10 @@ The MobileNet line of work by PaddlePaddle
         - `Former`: MF中的Former纯注意力部分
         - `ToFormer_Bridge`: 从Mobile到Former的桥
         - `ToMobile_Bridge`: 从Mobile到Former的桥
-        - `CombineBlock`(未完成): 组合Mobile + Bridges + Former
+        - `Stem`: 渐入层
+        - `Lite_BottleNeck`: 轻量BottleNeck
+        - `Classifier_Head`: 分类头
+        - `Basic_Block`: MobileFormer最小实现单元
         - `MobileFormer`(未完成): 网络实现
     
     - 构建模型接口说明:
