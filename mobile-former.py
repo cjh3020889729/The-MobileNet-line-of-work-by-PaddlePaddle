@@ -1266,9 +1266,20 @@ class MobileFormer(nn.Layer):
         return x
 
 
+def MobileFormer_Base(num_classes,
+                      in_channels,
+                      alpha=1.0):
+    """构建Base-MobileFormer模型
+    """
+    return MobileFormer(num_classes=num_classes,
+                        in_channels=in_channels,
+                        model_type='base',
+                        alpha=alpha)
+
+
 # if __name__ == "__main__":
 #     data = paddle.empty((1, 3, 224, 224))
-#     model = MobileFormer(num_classes=2, in_channels=3)
+#     model = MobileFormer_Base(num_classes=2, in_channels=3)
 
 #     y_pred = model(data)
 
