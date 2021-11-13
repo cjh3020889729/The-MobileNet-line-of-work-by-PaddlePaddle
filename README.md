@@ -13,6 +13,7 @@ The MobileNet line of work by PaddlePaddle
         </tr>
     </table>
     
+    - <a href="https://arxiv.org/abs/1704.04861" target="_blank">`Go to Read Paper`</a>
     - `done date`: `2021-11-12`
     - 模型结构(组网)类型:
     
@@ -43,6 +44,7 @@ The MobileNet line of work by PaddlePaddle
         </tr>
     </table>
     
+    - <a href="https://arxiv.org/abs/1801.04381" target="_blank">`Go to Read Paper`</a>
     - `done date`: `2021-11-12`
     - 模型结构(组网)类型:
     
@@ -83,6 +85,7 @@ The MobileNet line of work by PaddlePaddle
         </tr>
     </table>
     
+    - <a href="https://arxiv.org/abs/1905.02244" target="_blank">`Go to Read Paper`</a>
     - `done date`: `2021-11-12`
     - 模型结构(组网)类型:
     
@@ -131,7 +134,8 @@ The MobileNet line of work by PaddlePaddle
             <td align="center"><img src="./images/mf_config.png" border=0></td>
         </tr>
     </table>
-
+    
+    - <a href="https://arxiv.org/abs/2108.05895" target="_blank">`Go to Read Paper`</a>
     - `done date`: `2021-11-13`
     - 模型结构(组网)类型:
     
