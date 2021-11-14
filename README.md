@@ -159,8 +159,13 @@ The MobileNet line of work by PaddlePaddle
     - 构建模型接口说明:
     
         - `MobileFormer`: 构建MobileFormer模型的基类
+        - `MobileFormer_Big`: 构建**大型**MobileFormer的函数
         - `MobileFormer_Base`: 构建**基础**MobileFormer的函数
-        - other to do
+        - `MobileFormer_Base_Small`: 构建**基础-小型**MobileFormer的函数
+        - `MobileFormer_Mid`: 构建**中等**MobileFormer的函数
+        - `MobileFormer_Mid_Small`: 构建**中等-小型**MobileFormer的函数
+        - `MobileFormer_Small`: 构建**小型**MobileFormer的函数
+        - `MobileFormer_Tiny`: 构建**最小型**MobileFormer的函数
 
 
 
