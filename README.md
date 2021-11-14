@@ -154,7 +154,7 @@ The MobileNet line of work by PaddlePaddle
         - `Lite_BottleNeck`: 轻量BottleNeck
         - `Classifier_Head`: 分类头
         - `Basic_Block`: MobileFormer最小实现单元
-        - `MobileFormer`: 网络实现--目前仅实现Base版本
+        - `MobileFormer`: 网络实现
     
     - 构建模型接口说明:
     
