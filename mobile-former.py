@@ -1,16 +1,17 @@
+from os import name
 import paddle
 from paddle import nn
+from paddle.fluid.layers.nn import pad
 from paddle.nn import functional as F
 
-from former_config import MobileFormer_Config
-
+from former_config import MobileFormer_Config, get_head_hidden_size, MobileFormer_Config_Names
 
 
 class Identify(nn.Layer):
     """占位符 -- x = f(x)
     """
     def __init__(self):
-        super(Identify, self).__init__()
+        super(Identify, self).__init__(name_scope="identify")
 
     def forward(self, inputs):
         x = inputs
@@ -32,7 +33,7 @@ class DepthWise_Conv(nn.Layer):
                  kernel_size=3,
                  stride=1,
                  padding=0):
-        super(DepthWise_Conv, self).__init__()
+        super(DepthWise_Conv, self).__init__(name_scope="depthwise_conv")
         self.in_channels = in_channels
         self.kernel_size = kernel_size
         self.stride = stride
@@ -61,13 +62,15 @@ class PointWise_Conv(nn.Layer):
         Params Info:
             in_channels: 输入通道数
             out_channels: 输出通道数
+            groups: 1x1卷积分组数
         Forward Tips:
             - 输入特征图等于输出特征图
     """
     def __init__(self,
                  in_channels,
-                 out_channels):
-        super(PointWise_Conv, self).__init__()
+                 out_channels,
+                 groups=1):
+        super(PointWise_Conv, self).__init__(name_scope="pointwise_conv")
         self.in_channels = in_channels
         self.out_channels = out_channels
 
@@ -75,7 +78,8 @@ class PointWise_Conv(nn.Layer):
                               out_channels=out_channels,
                               kernel_size=1,
                               stride=1,
-                              padding=0)
+                              padding=0,
+                              groups=groups)
     
     def forward(self, inputs):
         assert inputs.shape[1] == self.in_channels, \
@@ -86,6 +90,7 @@ class PointWise_Conv(nn.Layer):
         x = self.conv(inputs)
 
         return x
+
 
 class MLP(nn.Layer):
     """多层感知机 -- Two Linear Layers
@@ -105,7 +110,7 @@ class MLP(nn.Layer):
                  out_features=None,
                  act=nn.GELU,
                  dropout_rate=0.):
-        super(MLP, self).__init__()
+        super(MLP, self).__init__(name_scope="mlp")
         self.in_features = in_features
         self.hidden_features = hidden_features
         self.out_features = in_features if out_features is None else out_features
@@ -149,7 +154,7 @@ class Attention(nn.Layer):
                  qkv_bias=True,
                  dropout_rate=0.,
                  attn_dropout_rate=0.):
-        super(Attention, self).__init__()
+        super(Attention, self).__init__(name_scope="attn")
         self.embed_dims = embed_dims
         self.num_head = num_head
         self.head_dims = embed_dims // num_head
@@ -214,7 +219,7 @@ class DropPath(nn.Layer):
             - 输入数据Shape等于输出数据Shape
     """
     def __init__(self, p=0.):
-        super(DropPath, self).__init__()
+        super(DropPath, self).__init__(name_scope="droppath")
         assert p >= 0. and p <= 1., \
             "Error: Please make sure the drop_rate is limit at [0., 1.],"+\
             "but now it is {0} in DropPath.".format(p)
@@ -265,7 +270,7 @@ class Former(nn.Layer):
                  mlp_dropout_rate=0.,
                  act=nn.GELU,
                  norm=nn.LayerNorm):
-        super(Former, self).__init__()
+        super(Former, self).__init__(name_scope="former")
         self.embed_dims = embed_dims
         self.mlp_ratio = mlp_ratio
         self.num_head = num_head
@@ -338,7 +343,7 @@ class ToFormer_Bridge(nn.Layer):
                  droppath_rate=0.,
                  attn_dropout_rate=0.,
                  norm=nn.LayerNorm):
-        super(ToFormer_Bridge, self).__init__()
+        super(ToFormer_Bridge, self).__init__(name_scope="former_bridge")
         self.in_channels = in_channels
         self.embed_dims = embed_dims
         self.num_head = num_head
@@ -448,7 +453,7 @@ class ToMobile_Bridge(nn.Layer):
                  droppath_rate=0.,
                  attn_dropout_rate=0.,
                  norm=nn.LayerNorm):
-        super(ToMobile_Bridge, self).__init__()
+        super(ToMobile_Bridge, self).__init__(name_scope="mobile_bridge")
         self.in_channels = in_channels
         self.embed_dims = embed_dims
         self.num_head = num_head
@@ -551,6 +556,7 @@ class DY_ReLU(nn.Layer):
             k: 动态参数基数,
                k=2 --> 每个完整的动态参数集都包含[a_1, a_2] 和[b_1, b_2]，类推 
             use_mlp: 动态参数映射层是否使用MLP, default:False
+            mlp_ratio: MLP隐藏特征伸缩比例
             coefs: 计算[a_1, a_2] 和[b_1, b_2]时的系数，超参数，default:[1.0, 0.5]
             const: 计算[a_1, a_2] 和[b_1, b_2]时的常数，超参数，default:[1.0, 0.0]
             dy_reduce: 动态参数映射的隐藏映射伸缩比例，基于输入特征图通道数
@@ -567,14 +573,16 @@ class DY_ReLU(nn.Layer):
                  m=3,
                  k=2,
                  use_mlp=False,
+                 mlp_ratio=2,
                  coefs=[1.0, 0.5],
                  const=[1.0, 0.0],
                  dy_reduce=6):
-        super(DY_ReLU, self).__init__()
+        super(DY_ReLU, self).__init__(name_scope="dy_relu")
         self.in_channels = in_channels
         self.m = m
         self.k = k
         self.use_mlp = use_mlp
+        self.mlp_ratio = mlp_ratio
         self.coefs = coefs # [0]:a系数，[1]:b系数
         self.const = const # [0]:a初始常数值，[1]:b初始常数值
         self.dy_reduce = dy_reduce
@@ -594,12 +602,16 @@ class DY_ReLU(nn.Layer):
         # 这里池化Token数据，所以用一维池化
         self.avg_pool = nn.AdaptiveAvgPool1D(output_size=1)
         self.project = nn.Sequential(
-            MLP(in_features=m, out_features=in_channels//dy_reduce) if use_mlp is None else \
+            MLP(in_features=m,
+                hidden_features=m*mlp_ratio,
+                out_features=in_channels//dy_reduce) if use_mlp is True else \
             nn.Linear(in_features=m, out_features=in_channels//dy_reduce),
             nn.ReLU(),
-            MLP(in_features=in_channels//dy_reduce, out_features=self.mid_channels) if use_mlp is None else \
+            MLP(in_features=in_channels//dy_reduce,
+                hidden_features=(in_channels//dy_reduce)*mlp_ratio,
+                out_features=self.mid_channels) if use_mlp is True else \
             nn.Linear(in_features=in_channels//dy_reduce, out_features=self.mid_channels),
-            nn.BatchNorm1D(self.mid_channels)
+            nn.BatchNorm(self.mid_channels)
         )
     
     def forward(self, feature_map, z_token):
@@ -656,6 +668,8 @@ class Mobile(nn.Layer):
             coefs: 计算[a_1, a_2] 和[b_1, b_2]时的系数，超参数，default:[1.0, 0.5]
             const: 计算[a_1, a_2] 和[b_1, b_2]时的常数，超参数，default:[1.0, 0.0]
             dy_reduce: 动态参数映射的隐藏映射伸缩比例，基于输入特征图通道数
+            groups: 1x1卷积分组数
+            mlp_ratio: MLP隐藏特征伸缩比例
         Forward Tips:
             - 输入特征图作为特征输入
             - 输入Token作为参数选择输入(DY_ReLU)
@@ -676,8 +690,10 @@ class Mobile(nn.Layer):
                  use_mlp=False,
                  coefs=[1.0, 0.5],
                  const=[1.0, 0.0],
-                 dy_reduce=6):
-        super(Mobile, self).__init__()
+                 dy_reduce=6,
+                 mlp_ratio=2,
+                 groups=1):
+        super(Mobile, self).__init__(name_scope="mobile")
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.t = t
@@ -690,6 +706,8 @@ class Mobile(nn.Layer):
         self.coefs = coefs
         self.const = const
         self.dy_reduce = dy_reduce
+        self.mlp_ratio = mlp_ratio
+        self.groups = groups
 
         if stride == 2:
             self.downsample = nn.Sequential(
@@ -702,19 +720,22 @@ class Mobile(nn.Layer):
             self.downsample_act = DY_ReLU(in_channels=in_channels,
                                             m=m, k=k, use_mlp=use_mlp,
                                             coefs=coefs, const=const,
-                                            dy_reduce=dy_reduce)
+                                            dy_reduce=dy_reduce,
+                                            mlp_ratio=mlp_ratio)
         else:
             self.downsample = Identify()
         
         self.in_pointwise_conv = nn.Sequential(
             PointWise_Conv(in_channels=in_channels,
-                           out_channels=int(t * in_channels)),
+                           out_channels=int(t * in_channels),
+                           groups=groups),
             nn.BatchNorm2D(int(t * in_channels))
         )
         self.in_pointwise_conv_act = DY_ReLU(in_channels=int(t * in_channels),
                                                 m=m, k=k, use_mlp=use_mlp,
                                                 coefs=coefs, const=const,
-                                                dy_reduce=dy_reduce)
+                                                dy_reduce=dy_reduce,
+                                                mlp_ratio=mlp_ratio)
 
         self.hidden_depthwise_conv = nn.Sequential(
             DepthWise_Conv(in_channels=int(t * in_channels),
@@ -726,11 +747,13 @@ class Mobile(nn.Layer):
         self.hidden_depthwise_conv_act = DY_ReLU(in_channels=int(t * in_channels),
                                                     m=m, k=k, use_mlp=use_mlp,
                                                     coefs=coefs, const=const,
-                                                    dy_reduce=dy_reduce)
+                                                    dy_reduce=dy_reduce,
+                                                    mlp_ratio=mlp_ratio)
 
         self.out_pointwise_conv = nn.Sequential(
             PointWise_Conv(in_channels=int(t * in_channels),
-                           out_channels=out_channels),
+                           out_channels=out_channels,
+                           groups=groups),
             nn.BatchNorm2D(out_channels)
         )
 
@@ -776,7 +799,7 @@ class Stem(nn.Layer):
                  stride=1,
                  padding=0,
                  act=nn.Hardswish):
-        super(Stem, self).__init__()
+        super(Stem, self).__init__(name_scope="stem")
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.kernel_size = kernel_size
@@ -788,6 +811,7 @@ class Stem(nn.Layer):
                               kernel_size=kernel_size,
                               stride=stride,
                               padding=padding)
+
         self.bn = nn.BatchNorm2D(out_channels)
         self.act = act()
     
@@ -815,6 +839,7 @@ class Lite_BottleNeck(nn.Layer):
             stride: 步长大小
             padding: 填充大小
             act: 激活函数 -- nn.Layer or nn.functional
+            groups: 1x1卷积分组数
         Forward Tips:
             - 可以直接替换激活函数 -- nn.ReLU等
             - DepthWise_Conv被分解，因此计算更轻量
@@ -827,8 +852,9 @@ class Lite_BottleNeck(nn.Layer):
                  kernel_size=3,
                  stride=1,
                  padding=0,
-                 act=nn.ReLU6):
-        super(Lite_BottleNeck, self).__init__()
+                 act=nn.ReLU6,
+                 groups=1):
+        super(Lite_BottleNeck, self).__init__(name_scope="lite_bneck")
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
         self.out_channels = out_channels
@@ -836,6 +862,7 @@ class Lite_BottleNeck(nn.Layer):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
+        self.groups = groups
 
         first_filter = [kernel_size, 1]
         first_stride = [stride, 1]
@@ -844,33 +871,36 @@ class Lite_BottleNeck(nn.Layer):
         second_stride = [1, stride]
         second_padding = [0, padding]
 
+        expands_channels = hidden_channels - in_channels
         self.lite_depthwise_conv = nn.Sequential(
             nn.Conv2D(in_channels=in_channels,
-                      out_channels=hidden_channels - ((hidden_channels - in_channels) // self.expands),
+                      out_channels=hidden_channels - expands_channels // expands,
                       kernel_size=first_filter,
                       stride=first_stride,
                       padding=first_padding,
                       groups=self.Gcd(in_channels=in_channels,
                                       hidden_channels=hidden_channels - \
-                                      ((hidden_channels - in_channels) // self.expands))),
-            nn.BatchNorm2D(hidden_channels - ((hidden_channels - in_channels) // self.expands)),
-            nn.Conv2D(in_channels=hidden_channels - ((hidden_channels - in_channels) // self.expands),
+                                          expands_channels // expands)),
+            nn.BatchNorm2D(hidden_channels - \
+                            expands_channels // expands),
+            nn.Conv2D(in_channels=hidden_channels - \
+                                  expands_channels // expands,
                       out_channels=hidden_channels,
                       kernel_size=second_filter,
                       stride=second_stride,
                       padding=second_padding,
                       groups=self.Gcd(hidden_channels=hidden_channels,
                                       in_channels=hidden_channels - \
-                                      ((hidden_channels - in_channels) // self.expands))),
+                                          expands_channels // expands)),
             nn.BatchNorm2D(hidden_channels),
             act()
         )
 
         self.pointwise_conv = nn.Sequential(
             PointWise_Conv(in_channels=hidden_channels,
-                           out_channels=out_channels),
+                           out_channels=out_channels,
+                           groups=groups),
             nn.BatchNorm2D(out_channels),
-            act()
         )
 
     def Gcd(self, in_channels, hidden_channels):
@@ -898,19 +928,6 @@ class Lite_BottleNeck(nn.Layer):
         return x
 
 
-def get_head_hidden_size(head_type='base'):
-    if head_type == 'base' or head_type == 'big':
-        return 1920
-    elif head_type == 'base_small':
-        return 1600
-    elif head_type == 'mid' or head_type == 'mid_small':
-        return 1280
-    elif head_type == 'samll' or head_type == 'tiny':
-        return 1024
-    
-    return 1920
-
-
 class Classifier_Head(nn.Layer):
     """Classifier_Head -- 输出分类结果
         Params Info:
@@ -929,7 +946,7 @@ class Classifier_Head(nn.Layer):
                  num_classes,
                  head_type='base',
                  act=nn.Hardswish):
-        super(Classifier_Head, self).__init__()
+        super(Classifier_Head, self).__init__(name_scope="head")
         self.in_channels = in_channels
         self.embed_dims = embed_dims
         self.num_classes = num_classes
@@ -996,6 +1013,7 @@ class Basic_Block(nn.Layer):
             coefs: 动态参数系数, default:[1.0, 0.5]
             const: 动态参数初始常量, default:[1.0, 0.0]
             dy_reduce: 动态参数映射隐藏特征伸缩比例, default:6
+            groups: 1x1卷积分组数, default:1
             add_pointwise_conv: 是否额外添加1x1卷积, default:False
             pointwise_conv_channels: 额外卷积拓展通道数, default:None,
                                      若add_pointwise_conv不为False，则该值应该被填充
@@ -1027,11 +1045,12 @@ class Basic_Block(nn.Layer):
                  coefs=[1.0, 0.5],
                  const=[1.0, 0.0],
                  dy_reduce=6,
+                 groups=1,
                  add_pointwise_conv=False,
                  pointwise_conv_channels=None,
                  act=nn.GELU,
                  norm=nn.LayerNorm):
-        super(Basic_Block, self).__init__()
+        super(Basic_Block, self).__init__(name_scope="basic_block")
         self.embed_dims = embed_dims
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -1057,13 +1076,15 @@ class Basic_Block(nn.Layer):
         self.use_mlp = use_mlp
         self.add_pointwise_conv = add_pointwise_conv
         self.pointwise_conv_channels = pointwise_conv_channels
+        self.groups = groups
 
         self.mobile = Mobile(in_channels=in_channels,
                              out_channels=out_channels,
                              t=t, m=m, kernel_size=kernel_size,
                              stride=stride, padding=padding, k=k,
                              use_mlp=use_mlp, coefs=coefs,
-                             const=const, dy_reduce=dy_reduce)
+                             const=const, dy_reduce=dy_reduce,
+                             mlp_ratio=mlp_ratio, groups=groups)
 
         self.toformer_bridge = ToFormer_Bridge(in_channels=in_channels,
                                                embed_dims=embed_dims,
@@ -1095,8 +1116,17 @@ class Basic_Block(nn.Layer):
                                                norm=norm)
         
         if add_pointwise_conv == True:
+            self.extra_toformer_bridge = ToFormer_Bridge(in_channels=out_channels,
+                                                            embed_dims=embed_dims,
+                                                            num_head=num_head,
+                                                            q_bias=q_bias,
+                                                            dropout_rate=dropout_rate,
+                                                            droppath_rate=droppath_rate,
+                                                            attn_dropout_rate=attn_dropout_rate,
+                                                            norm=norm)
             self.pointwise_conv = PointWise_Conv(in_channels=out_channels,
-                                                 out_channels=pointwise_conv_channels)
+                                                 out_channels=pointwise_conv_channels,
+                                                 groups=groups)
         else:
             self.pointwise_conv = Identify()
     
@@ -1115,6 +1145,11 @@ class Basic_Block(nn.Layer):
 
         x = self.mobile(feature_map, z)
         output_x = self.tomobile_bridge(x, z)
+
+        if self.add_pointwise_conv == True:
+            # 最后一次融入局部信息的全局交互
+            z = self.extra_toformer_bridge(output_x, z)
+
         output_x = self.pointwise_conv(output_x)
 
         return output_x, z
@@ -1127,14 +1162,16 @@ class MobileFormer(nn.Layer):
                  num_classes=1000,
                  in_channels=3,
                  model_type='base',
-                 alpha=1.0):
+                 alpha=1.0,
+                 print_info=False):
         super(MobileFormer, self).__init__()
         self.num_classes = num_classes
         self.in_channels = in_channels
         self.model_type = model_type
         self.alpha = alpha
 
-        self.net_configs = MobileFormer_Config(model_type=model_type, alpha=alpha)
+        self.net_configs = MobileFormer_Config(model_type=model_type,
+                                               alpha=alpha, print_info=print_info)
         self.build_model() # 构建模型基本配置
 
         self.global_token = self.create_parameter(shape=[1, self.m, self.embed_dims],
@@ -1168,6 +1205,7 @@ class MobileFormer(nn.Layer):
         self.coefs = base_cfg[13]
         self.const = base_cfg[14]
         self.dy_reduce = base_cfg[15]
+        self.groups = base_cfg[16]
 
     def create_stem(self):
         """构建渐入层
@@ -1189,9 +1227,8 @@ class MobileFormer(nn.Layer):
                                kernel_size=self.net_configs['bneck-lite'][4],
                                stride=self.net_configs['bneck-lite'][5],
                                padding=self.net_configs['bneck-lite'][6],
-                               act=self.net_configs['bneck-lite'][7]
-                              )
-
+                               act=self.net_configs['bneck-lite'][7],
+                               groups=self.groups)
 
     def create_mf_blocks(self):
         """构建MF块
@@ -1227,13 +1264,13 @@ class MobileFormer(nn.Layer):
                             add_pointwise_conv=blocks_config[i][6],
                             pointwise_conv_channels=blocks_config[i][7],
                             act=blocks_config[i][8],
-                            norm=blocks_config[i][9])
+                            norm=blocks_config[i][9],
+                            groups=self.groups)
             )
 
         blocks = nn.LayerList(blocks)
 
         return blocks
-
 
     def create_head(self):
         """创建分类头
@@ -1251,7 +1288,6 @@ class MobileFormer(nn.Layer):
         z_token = paddle.concat([self.global_token]*B)
         return z_token
 
-
     def forward(self, inputs):
         z_token = self.create_token(inputs.shape[0])
 
@@ -1266,21 +1302,87 @@ class MobileFormer(nn.Layer):
         return x
 
 
+def MobileFormer_Big(num_classes,
+                      in_channels,
+                      alpha=1.0, print_info=False):
+    """构建Big-MobileFormer模型
+    """
+    return MobileFormer(num_classes=num_classes,
+                        in_channels=in_channels,
+                        model_type='big',
+                        alpha=alpha, print_info=print_info)
+
 def MobileFormer_Base(num_classes,
                       in_channels,
-                      alpha=1.0):
+                      alpha=1.0, print_info=False):
     """构建Base-MobileFormer模型
     """
     return MobileFormer(num_classes=num_classes,
                         in_channels=in_channels,
                         model_type='base',
-                        alpha=alpha)
+                        alpha=alpha, print_info=print_info)
+
+def MobileFormer_Base_Small(num_classes,
+                      in_channels,
+                      alpha=1.0, print_info=False):
+    """构建Base_Small-MobileFormer模型
+    """
+    return MobileFormer(num_classes=num_classes,
+                        in_channels=in_channels,
+                        model_type='base_small',
+                        alpha=alpha, print_info=print_info)
+
+def MobileFormer_Mid(num_classes,
+                      in_channels,
+                      alpha=1.0, print_info=False):
+    """构建Mid-MobileFormer模型
+    """
+    return MobileFormer(num_classes=num_classes,
+                        in_channels=in_channels,
+                        model_type='mid',
+                        alpha=alpha, print_info=print_info)
+
+def MobileFormer_Mid_Small(num_classes,
+                      in_channels,
+                      alpha=1.0, print_info=False):
+    """构建Mid_Small-MobileFormer模型
+    """
+    return MobileFormer(num_classes=num_classes,
+                        in_channels=in_channels,
+                        model_type='mid_small',
+                        alpha=alpha, print_info=print_info)
+
+def MobileFormer_Small(num_classes,
+                      in_channels,
+                      alpha=1.0, print_info=False):
+    """构建Small-MobileFormer模型
+    """
+    return MobileFormer(num_classes=num_classes,
+                        in_channels=in_channels,
+                        model_type='small',
+                        alpha=alpha, print_info=print_info)
+
+def MobileFormer_Tiny(num_classes,
+                      in_channels,
+                      alpha=1.0, print_info=False):
+    """构建Tiny-MobileFormer模型
+    """
+    return MobileFormer(num_classes=num_classes,
+                        in_channels=in_channels,
+                        model_type='tiny',
+                        alpha=alpha, print_info=print_info)
 
 
-# if __name__ == "__main__":
-#     data = paddle.empty((1, 3, 224, 224))
-#     model = MobileFormer_Base(num_classes=2, in_channels=3)
+if __name__ == "__main__":
+    data = paddle.empty((1, 3, 224, 224))
+    model = MobileFormer_Base(num_classes=1000, in_channels=3)
+    # y_pred = model(data)
+    # print(y_pred.shape)
 
-#     y_pred = model(data)
+    # summary
+    # model = paddle.Model(model)
+    # print(model.summary(input_size=(1, 3, 224, 224)))
 
-#     print(y_pred.shape)
+    # flops
+    print(paddle.flops(model, input_size=(1, 3, 224, 224),
+                       print_detail=True))
