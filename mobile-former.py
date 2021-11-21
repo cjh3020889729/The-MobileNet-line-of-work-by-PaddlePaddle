@@ -1,79 +1,87 @@
-from os import name
 import paddle
 from paddle import nn
-from paddle.fluid.layers.nn import pad
-from paddle.nn import functional as F
+from paddle.nn.layer.activation import GELU
+        
 
-from former_config import MobileFormer_Config, get_head_hidden_size, MobileFormer_Config_Names
-
-
-class Identify(nn.Layer):
-    """占位符 -- x = f(x)
+class Stem(nn.Layer):
+    """渐入层
     """
-    def __init__(self):
-        super(Identify, self).__init__(name_scope="identify")
-
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size=3,
+                 stride=1,
+                 padding=0,
+                 act=nn.Hardswish):
+        super(Stem, self).__init__(
+                 name_scope="Stem")
+        self.conv = nn.Conv2D(in_channels=in_channels,
+                              out_channels=out_channels,
+                              kernel_size=kernel_size,
+                              stride=stride,
+                              padding=padding)
+        self.bn = nn.BatchNorm2D(out_channels)
+        self.act = act()
+    
     def forward(self, inputs):
-        x = inputs
+        x = self.conv(inputs)
+        x = self.bn(x)
+        x = self.act(x)
         return x
 
 
-class DepthWise_Conv(nn.Layer):
-    """深度卷积 -- groups == in_channels
-        Params Info:
-            in_channels: 输入通道数
-            kernel_size: 卷积核大小
-            stride: 步长大小
-            padding: 填充大小
-        Forward Tips:
-            - 输入通道数等于输出通道数
+class DepthWiseConv(nn.Layer):
+    """深度卷积 -- 支持lite形式
     """
     def __init__(self,
                  in_channels,
                  kernel_size=3,
                  stride=1,
-                 padding=0):
-        super(DepthWise_Conv, self).__init__(name_scope="depthwise_conv")
-        self.in_channels = in_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-
-        self.conv = nn.Conv2D(in_channels=in_channels,
-                              out_channels=in_channels,
-                              groups=in_channels,
-                              kernel_size=kernel_size,
-                              stride=stride,
-                              padding=padding)
-        
+                 padding=0,
+                 is_lite=False):
+        super(DepthWiseConv, self).__init__(
+                 name_scope="DepthWiseConv")
+        self.is_lite = is_lite
+        if is_lite is False:
+            self.conv = nn.Conv2D(in_channels=in_channels,
+                                out_channels=in_channels,
+                                groups=in_channels,
+                                kernel_size=kernel_size,
+                                stride=stride,
+                                padding=padding)
+        else:
+            self.conv = nn.Sequential(
+                # [[0, 1, 2]] -- [3, 1]
+                nn.Conv2D(in_channels=in_channels,
+                          out_channels=in_channels,
+                          kernel_size=[kernel_size, 1],
+                          stride=[stride, 1],
+                          padding=[padding, 0],
+                          groups=in_channels),
+                nn.BatchNorm2D(in_channels),
+                # [[0], [1], [2]] -- [1, 3]
+                nn.Conv2D(in_channels=in_channels,
+                          out_channels=in_channels,
+                          kernel_size=[1, kernel_size],
+                          stride=[1, stride],
+                          padding=[0, padding],
+                          groups=in_channels)
+            )
+    
     def forward(self, inputs):
-        assert inputs.shape[1] == self.in_channels, \
-            "Error: Please make sure the data of input has"+\
-            "the same number of channel(in:{0}) with Conv Filter".format(inputs.shape[1])+\
-            "Config(set:{0})  in DepthWise_Conv.".format(self.in_channels)
-        
         x = self.conv(inputs)
-
         return x
 
 
-class PointWise_Conv(nn.Layer):
-    """逐点卷积 -- 1x1
-        Params Info:
-            in_channels: 输入通道数
-            out_channels: 输出通道数
-            groups: 1x1卷积分组数
-        Forward Tips:
-            - 输入特征图等于输出特征图
+class PointWiseConv(nn.Layer):
+    """1x1逐点卷积 -- 支持分组卷积
     """
     def __init__(self,
                  in_channels,
                  out_channels,
                  groups=1):
-        super(PointWise_Conv, self).__init__(name_scope="pointwise_conv")
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
+        super(PointWiseConv, self).__init__(
+                 name_scope="PointWiseConv")
         self.conv = nn.Conv2D(in_channels=in_channels,
                               out_channels=out_channels,
                               kernel_size=1,
@@ -82,53 +90,418 @@ class PointWise_Conv(nn.Layer):
                               groups=groups)
     
     def forward(self, inputs):
-        assert inputs.shape[1] == self.in_channels, \
-            "Error: Please make sure the data of input has"+\
-            "the same number of channel(in:{0}) with Conv Filter".format(inputs.shape[1])+\
-            "Config(set:{0})  in PointWise_Conv.".format(self.in_channels)
-        
         x = self.conv(inputs)
+        return x
+
+
+class DyReLU(nn.Layer):
+    """动态激活函数
+    """
+    def __init__(self,
+                 in_channels,
+                 embed_dims,
+                 k=2, # a_1, a_2 coef, b_1, b_2 bias
+                 coefs=[1.0, 0.5], # coef init value
+                 consts=[1.0, 0.0], # const init value
+                 reduce=4):
+        super(DyReLU, self).__init__(
+                 name_scope="DyReLU")
+        self.embed_dims = embed_dims
+        self.in_channels = in_channels
+        self.k = k
+
+        self.mid_channels = 2*k*in_channels
+
+        # 4 values
+        # a_k = alpha_k + coef_k*x, 2
+        # b_k = belta_k + coef_k*x, 2
+        self.coef = paddle.to_tensor([coefs[0]]*k + [coefs[1]]*k)
+        self.const = paddle.to_tensor([consts[0]] + [consts[1]]*(2*k-1))
+
+        self.project = nn.Sequential(
+            MLP(in_features=embed_dims,
+                out_features=self.mid_channels,
+                mlp_ratio=1/reduce,
+                act=nn.ReLU),
+            nn.BatchNorm(self.mid_channels)
+        )
+    
+    def forward(self, feature_map, tokens):
+        B, M, D = tokens.shape
+        dy_params = self.project(tokens[:, 0]) # B, mid_channels
+        # B, IN_CHANNELS, 2*k
+        dy_params = dy_params.reshape(shape=[B, self.in_channels, 2*self.k])
+
+        # B, IN_CHANNELS, 2*k -- a_1, a_2, b_1, b_2
+        dy_init_params = dy_params * self.coef + self.const
+        f = feature_map.transpose(perm=[2, 3, 0, 1]).unsqueeze(axis=-1) # H, W, B, C, 1
+
+        # output shape: H, W, B, C, k
+        output = f * dy_init_params[:, :, :self.k] + dy_init_params[:, :, self.k:]
+        output = paddle.max(output, axis=-1) # H, W, B, C
+        output = output.transpose(perm=[2, 3, 0, 1]) # B, C, H, W
+
+        return output
+
+
+class BottleNeck(nn.Layer):
+    """瓶颈块
+    """
+    def __init__(self,
+                 in_channels,
+                 hidden_channels,
+                 out_channels,
+                 groups=1,
+                 kernel_size=3,
+                 stride=1,
+                 padding=0,
+                 embed_dims=None,
+                 k=2, # the number of dyrelu-params
+                 coefs=[1.0, 0.5],
+                 consts=[1.0, 0.0],
+                 reduce=4,
+                 use_dyrelu=False,
+                 is_lite=False):
+        super(BottleNeck, self).__init__(
+                 name_scope="BottleNeck")
+        self.is_lite = is_lite
+        self.use_dyrelu = use_dyrelu
+
+        assert use_dyrelu==False or (use_dyrelu==True and embed_dims is not None), \
+               "Error: Please make sure while the use_dyrelu==True,"+\
+               " embed_dims(now:{0})>0.".format(embed_dims)
+
+
+        self.in_pw = PointWiseConv(in_channels=in_channels,
+                                   out_channels=hidden_channels,
+                                   groups=groups)
+        self.in_pw_bn = nn.BatchNorm2D(hidden_channels)
+        
+        self.dw = DepthWiseConv(in_channels=hidden_channels,
+                                kernel_size=kernel_size,
+                                stride=stride,
+                                padding=padding,
+                                is_lite=is_lite)
+        self.dw_bn = nn.BatchNorm2D(hidden_channels)
+
+        self.out_pw = PointWiseConv(in_channels=hidden_channels,
+                                    out_channels=out_channels,
+                                    groups=groups)
+        self.out_pw_bn = nn.BatchNorm2D(out_channels)
+
+        if use_dyrelu == False:
+            self.act = nn.ReLU()
+        else:
+            self.act = DyReLU(in_channels=hidden_channels,
+                                embed_dims=embed_dims,
+                                k=k,
+                                coefs=coefs,
+                                consts=consts,
+                                reduce=reduce)
+
+    
+    def forward(self, feature_map, tokens):
+        x = self.in_pw(feature_map)
+        x = self.in_pw_bn(x)
+        if self.use_dyrelu:
+            x = self.act(x, tokens)
+
+        x = self.dw(x)
+        x = self.dw_bn(x)
+        if self.use_dyrelu:
+            x = self.act(x, tokens)
+
+        x = self.out_pw(x)
+        x = self.out_pw_bn(x)
 
         return x
 
 
+class Classifier_Head(nn.Layer):
+    """分类头
+    """
+    def __init__(self,
+                 in_channels,
+                 embed_dims,
+                 hidden_features,
+                 num_classes=1000,
+                 act=nn.Hardswish):
+        super(Classifier_Head, self).__init__(
+                 name_scope="Classifier_Head")
+        self.avg_pool = nn.AdaptiveAvgPool2D(output_size=1)
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(in_features=in_channels+embed_dims,
+                             out_features=hidden_features)
+        self.fc2 = nn.Linear(in_features=hidden_features,
+                             out_features=num_classes)
+        
+        self.act = act()
+        self.softmax = nn.Softmax()
+    
+    def forward(self, feature_map, tokens):
+        x = self.avg_pool(feature_map) # B, C, 1, 1
+        x = self.flatten(x) # B, C
+        
+        z = tokens[:, 0] # B, 1, D
+        x = paddle.concat([x, z], axis=-1)
+
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.fc2(x)
+        x = self.softmax(x)
+
+        return x
+
+
+class Mobile(nn.Layer):
+    """Mobile sub-block
+    """
+    def __init__(self,
+                 in_channels,
+                 hidden_channels,
+                 out_channels,
+                 kernel_size=3,
+                 stride=1,
+                 padding=0,
+                 groups=1,
+                 embed_dims=None,
+                 k=2,
+                 coefs=[1.0, 0.5],
+                 consts=[1.0, 0.0],
+                 reduce=4,
+                 use_dyrelu=False):
+        super(Mobile, self).__init__(
+                 name_scope="Mobile")
+        self.add_dw = True if stride==2 else False
+
+        self.bneck = BottleNeck(in_channels=in_channels,
+                                hidden_channels=hidden_channels,
+                                out_channels=out_channels,
+                                kernel_size=kernel_size,
+                                stride=1,
+                                padding=1,
+                                groups=groups,
+                                embed_dims=embed_dims,
+                                k=k,
+                                coefs=coefs,
+                                consts=consts,
+                                reduce=reduce,
+                                use_dyrelu=use_dyrelu)
+
+        if self.add_dw: # stride==2
+            self.downsample_dw = nn.Sequential(
+                DepthWiseConv(in_channels=in_channels,
+                              kernel_size=kernel_size,
+                              stride=stride,
+                              padding=padding),
+                nn.BatchNorm2D(in_channels)
+                #, nn.ReLU()
+            )
+    
+    def forward(self, feature_map, tokens):
+        if self.add_dw:
+            feature_map = self.downsample_dw(feature_map)
+
+        x = self.bneck(feature_map, tokens)
+        return x
+
+
+class ToFormer_Bridge(nn.Layer):
+    """Mobile to Former Bridge
+    """
+    def __init__(self,
+                 embed_dims,
+                 in_channels,
+                 num_head=1,
+                 dropout_rate=0.,
+                 attn_dropout_rate=0.):
+        super(ToFormer_Bridge, self).__init__(
+                 name_scope="ToFormer_Bridge")
+        self.num_head = num_head
+        self.head_dims = in_channels // num_head
+        self.scale = self.head_dims ** -0.5
+
+        # split head to project
+        self.heads_q_proj = []
+        for i in range(num_head): # n linear
+            self.heads_q_proj.append(
+                nn.Linear(in_features=embed_dims // num_head,
+                          out_features=self.head_dims)
+            )
+        self.heads_q_proj = nn.LayerList(self.heads_q_proj)
+
+        self.output = nn.Linear(in_features=self.num_head*self.head_dims,
+                                out_features=embed_dims)
+        
+        self.softmax = nn.Softmax()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.attn_dropout= nn.Dropout(attn_dropout_rate)
+
+
+    def transfer_shape(self, feature_map, tokens):
+        B, C, H, W = feature_map.shape
+        assert C % self.num_head == 0, \
+            "Erorr: Please make sure feature_map.channels % "+\
+            "num_head == 0(now:{0}).".format(C % self.num_head)
+        fm = feature_map.reshape(shape=[B, C, H*W]) # B, C, L
+        fm = fm.transpose(perm=[0, 2, 1]) # B, L, C -- C = num_head * head_dims
+        fm = fm.reshape(shape=[B, H*W, self.num_head, self.head_dims])
+        fm = fm.transpose(perm=[0, 2, 1, 3]) # B, n_h, L, h_d
+
+        B, M, D = tokens.shape
+        h_token = tokens.reshape(shape=[B, M, self.num_head, D // self.num_head])
+        h_token = h_token.transpose(perm=[0, 2, 1, 3]) # B, n_h, M, D // n_h
+
+        return fm, h_token
+
+    def forward(self, feature_map, tokens):
+        B, M, D = tokens.shape
+        # fm（key/value） to shape: B, n_h, L, h_d
+        # token to shape: B, n_h, M, D // n_h
+        fm, token = self.transfer_shape(feature_map, tokens)
+
+        q_list = []
+        for i in range(self.num_head):
+            q_list.append(
+                # B, 1, M, head_dims
+                self.heads_q_proj[i](token[:, i, :, :]).reshape(
+                                shape=[B, 1, M, self.head_dims])
+            )
+        q = paddle.concat(q_list, axis=1) # B, num_head, M, head_dims
+
+        # attention distribution
+        attn = paddle.matmul(q, fm, transpose_y=True) # B, n_h, M, L
+        attn = attn * self.scale
+        attn = self.softmax(attn)
+        attn = self.dropout(attn)
+
+        # attention result
+        z = paddle.matmul(attn, fm) # B, n_h, M, h_d
+        z = z.transpose(perm=[0, 2, 1, 3])
+        z = z.reshape(shape=[B, M, self.num_head*self.head_dims])
+        z = self.output(z) # B, M, D
+        z = self.dropout(z)
+        z = z + tokens
+
+        return z
+
+
+class ToMobile_Bridge(nn.Layer):
+    """Former to Mobile Bridge
+    """
+    def __init__(self,
+                 embed_dims,
+                 in_channels,
+                 num_head=1,
+                 dropout_rate=0.,
+                 attn_dropout_rate=0.):
+        super(ToMobile_Bridge, self).__init__(
+                 name_scope="ToMobile_Bridge")
+        self.num_head = num_head
+        self.head_dims = in_channels // num_head
+        self.scale = self.head_dims ** -0.5
+
+        self.heads_k_proj = []
+        self.heads_v_proj = []
+        for i in range(num_head): # n linear
+            self.heads_k_proj.append(
+                nn.Linear(in_features=embed_dims // num_head,
+                          out_features=self.head_dims)
+            )
+            self.heads_v_proj.append(
+                nn.Linear(in_features=embed_dims // num_head,
+                          out_features=self.head_dims)
+            )
+        self.heads_k_proj = nn.LayerList(self.heads_k_proj)
+        self.heads_v_proj = nn.LayerList(self.heads_v_proj)
+
+        self.softmax = nn.Softmax()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.attn_dropout= nn.Dropout(attn_dropout_rate)
+    
+
+    def transfer_shape(self, feature_map, tokens):
+        B, C, H, W = feature_map.shape
+        assert C % self.num_head == 0, \
+            "Erorr: Please make sure feature_map.channels % "+\
+            "num_head == 0(now:{0}).".format(C % self.num_head)
+        fm = feature_map.reshape(shape=[B, C, H*W]) # B, C, L
+        fm = fm.transpose(perm=[0, 2, 1]) # B, L, C -- C = num_head * head_dims
+        fm = fm.reshape(shape=[B, H*W, self.num_head, self.head_dims])
+        fm = fm.transpose(perm=[0, 2, 1, 3]) # B, n_h, L, h_d
+
+        B, M, D = tokens.shape
+        k = tokens.reshape(shape=[B, M, self.num_head, D // self.num_head])
+        k = k.transpose(perm=[0, 2, 1, 3]) # B, n_h, M, D // n_h
+        v = tokens.reshape(shape=[B, M, self.num_head, D // self.num_head])
+        v = v.transpose(perm=[0, 2, 1, 3]) # B, n_h, M, D // n_h
+
+        return fm, k, v
+
+
+    def forward(self, feature_map, tokens):
+        B, C, H, W = feature_map.shape
+        B, M, D = tokens.shape
+
+        # fm（q） to shape: B, n_h, L, h_d
+        # k/v to shape: B, n_h, M, D // n_h
+        q, k_, v_ = self.transfer_shape(feature_map, tokens)
+
+        k_list = []
+        v_list = []
+        for i in range(self.num_head):
+            k_list.append(
+                # B, 1, M, head_dims
+                self.heads_k_proj[i](k_[:, i, :, :]).reshape(
+                                shape=[B, 1, M, self.head_dims])
+            )
+            v_list.append(
+                # B, 1, M, head_dims
+                self.heads_v_proj[i](v_[:, i, :, :]).reshape(
+                                shape=[B, 1, M, self.head_dims])
+            )
+        k = paddle.concat(k_list, axis=1) # B, num_head, M, head_dims
+        v = paddle.concat(v_list, axis=1) # B, num_head, M, head_dims
+
+        # attention distribution
+        attn = paddle.matmul(q, k, transpose_y=True) # B, n_h, L, M
+        attn = attn * self.scale
+        attn = self.softmax(attn)
+        attn = self.dropout(attn)
+
+        # attention result
+        z = paddle.matmul(attn, v) # B, n_h, L, h_d
+        z = z.transpose(perm=[0, 1, 3, 2]) # B, n_h, h_d, L
+        # B, n_h*h_d, H, W
+        z = z.reshape(shape=[B, self.num_head*self.head_dims, H, W])
+        z = self.dropout(z)
+        z = z + feature_map
+
+        return z
+
+
 class MLP(nn.Layer):
-    """多层感知机 -- Two Linear Layers
-        Params Info:
-            in_features: 输入特征数
-            hidden_features: 隐藏层特征数
-            out_features: 输出特征数
-            act: 激活函数 -- nn.Layer or nn.functional
-            dropout_rate: 丢弃率
-        Forward Tips:
-            - 输入特征数等于输出特征数
-            - 最后输出为线性输出(未act激活)
+    """多层感知机
     """
     def __init__(self,
                  in_features,
-                 hidden_features,
                  out_features=None,
-                 act=nn.GELU,
-                 dropout_rate=0.):
-        super(MLP, self).__init__(name_scope="mlp")
-        self.in_features = in_features
-        self.hidden_features = hidden_features
-        self.out_features = in_features if out_features is None else out_features
-        self.dropout_rate = dropout_rate
-
+                 mlp_ratio=2,
+                 mlp_dropout_rate=0.,
+                 act=nn.GELU):
+        super(MLP, self).__init__(name_scope="MLP")
+        self.out_features = in_features if out_features is None else \
+                            out_features
+        
         self.fc1 = nn.Linear(in_features=in_features,
-                             out_features=hidden_features)
-        self.fc2 = nn.Linear(in_features=hidden_features,
+                             out_features=int(mlp_ratio*in_features))
+        self.fc2 = nn.Linear(in_features=int(mlp_ratio*in_features),
                              out_features=self.out_features)
+        
         self.act = act()
-        self.dropout = nn.Dropout(p=dropout_rate)
+        self.dropout = nn.Dropout(mlp_dropout_rate)
     
     def forward(self, inputs):
-        assert inputs.shape[-1] == self.in_features, \
-            "Error: Please make sure the data of input has"+\
-            "the same number of features(in:{0}) with MLP Dense".format(inputs.shape[-1])+\
-            "Config(set:{0})  in MLP.".format(self.in_features)
-        
         x = self.fc1(inputs)
         x = self.act(x)
         x = self.dropout(x)
@@ -138,1251 +511,365 @@ class MLP(nn.Layer):
 
 
 class Attention(nn.Layer):
-    """注意力模块 -- 支持多头注意力，可控制qkv是否使用bias
-        Params Info:
-            embed_dims: 输入特征数/嵌入维度
-            num_head: 注意力头数
-            qkv_bias: qkv映射层是否使用bias, default: True
-            dropout_rate: 注意力结果丢弃率
-            attn_dropout_rate: 注意力分布丢弃率
-        Forward Tips:
-            - 输入特征数等于输出特征数
+    """多头注意力机制的实现
     """
     def __init__(self,
                  embed_dims,
                  num_head=1,
-                 qkv_bias=True,
                  dropout_rate=0.,
                  attn_dropout_rate=0.):
-        super(Attention, self).__init__(name_scope="attn")
-        self.embed_dims = embed_dims
+        super(Attention, self).__init__(
+                 name_scope="Attention")
         self.num_head = num_head
         self.head_dims = embed_dims // num_head
         self.scale = self.head_dims ** -0.5
-        self.qkv_bias = qkv_bias
-        self.dropout_rate = dropout_rate
-        self.attn_dropout_rate = attn_dropout_rate
 
         self.qkv_proj = nn.Linear(in_features=embed_dims,
-                                  out_features=3*self.num_head*self.head_dims,
-                                  bias_attr=qkv_bias)
-        self.out = nn.Linear(in_features=self.num_head*self.head_dims,
-                             out_features=self.embed_dims)
+                                out_features=3*self.num_head*self.head_dims)
+        self.output = nn.Linear(in_features=self.num_head*self.head_dims,
+                                out_features=embed_dims)
         
         self.softmax = nn.Softmax()
-        self.attn_dropout = nn.Dropout(attn_dropout_rate)
-        self.out_dropout = nn.Dropout(dropout_rate)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.attn_dropout= nn.Dropout(attn_dropout_rate)
     
-    def transpose_qkv(self, qkv):
-        assert len(qkv) == 3, \
-            "Error: Please make sure the qkv_params has 3 items"+\
-            ", but now it has {0} items in Attention-func:transpose_qkv.".format(len(qkv))
 
-        q, k, v = qkv
+    def transfer_shape(self, q, k, v):
         B, M, _ = q.shape
-        q = q.reshape(shape=[B, M, self.num_head, self.head_dims]).transpose(perm=[0, 2, 1, 3])
-        k = k.reshape(shape=[B, M, self.num_head, self.head_dims]).transpose(perm=[0, 2, 1, 3])
-        v = v.reshape(shape=[B, M, self.num_head, self.head_dims]).transpose(perm=[0, 2, 1, 3])
+        q = q.reshape(shape=[B, M, self.num_head, self.head_dims])
+        q = q.transpose(perm=[0, 2, 1, 3]) # B, n_h, M, h_d
+        k = k.reshape(shape=[B, M, self.num_head, self.head_dims])
+        k = k.transpose(perm=[0, 2, 1, 3]) # B, n_h, M, h_d
+        v = v.reshape(shape=[B, M, self.num_head, self.head_dims])
+        v = v.transpose(perm=[0, 2, 1, 3]) # B, n_h, M, h_d
+
         return q, k, v
 
-    def forward(self, inputs):
-        assert inputs.shape[-1] == self.embed_dims, \
-            "Error: Please make sure the data of input has"+\
-            "the same number of embed_dims(in:{0}) with Attention ".format(inputs.shape[-1])+\
-            "Config(set:{0})  in Attention.".format(self.embed_dims)
-        
-        B, M, D = inputs.shape
-        x = self.qkv_proj(inputs) # B, M, 3*self.num_head*self.head_dims
-        qkv = x.chunk(3, axis=-1) # [[B, M, self.num_head*self.head_dims], [...], [...]]
-        q, k, v = self.transpose_qkv(qkv) # q/k/v_shape: [B, self.num_head, M, self.head_dims]
 
-        attn = paddle.matmul(q, k, transpose_y=True) # B, self.num_head, M, M
+    def forward(self, inputs):
+        B, M, D = inputs.shape
+        assert D % self.num_head == 0, \
+            "Erorr: Please make sure Token.D % "+\
+            "num_head == 0(now:{0}).".format(D % self.num_head)
+
+        qkv= self.qkv_proj(inputs)
+        q, k, v = qkv.chunk(3, axis=-1)
+        # B, n_h, M, h_d
+        q, k, v = self.transfer_shape(q, k, v)
+
+        attn = paddle.matmul(q, k, transpose_y=True) # B, n_h, M, M
         attn = attn * self.scale
         attn = self.softmax(attn)
         attn = self.attn_dropout(attn)
 
-        z = paddle.matmul(attn, v) # B, self.num_head, M, self.head_dims
-        z = z.transpose(perm=[0, 2, 1, 3]) # B, M, self.num_head, self.head_dims
+        z = paddle.matmul(attn, v) # B, n_h, M, h_d
+        z = z.transpose(perm=[0, 2, 1, 3]) # B, M, n_h, h_d
         z = z.reshape(shape=[B, M, self.num_head*self.head_dims])
-        z = self.out(z)
-        z = self.out_dropout(z)
+        z = self.output(z)
+        z = self.attn_dropout(z)
+        z = z + inputs
 
         return z
 
 
 class DropPath(nn.Layer):
-    """多分支随机丢弃 -- Batch中不同item分支进行随机丢弃
-        Params Info:
-            p: 丢弃率
-        Forward Tips:
-            - 返回执行多分支随机丢弃后的结果
-            - 输入数据Shape等于输出数据Shape
+    """多分支丢弃层 -- 沿着Batch
     """
-    def __init__(self, p=0.):
-        super(DropPath, self).__init__(name_scope="droppath")
-        assert p >= 0. and p <= 1., \
-            "Error: Please make sure the drop_rate is limit at [0., 1.],"+\
-            "but now it is {0} in DropPath.".format(p)
-        
+    def __init__(self,
+                 p=0.):
+        super(DropPath, self).__init__(
+                 name_scope="DropPath")
         self.p = p
     
     def forward(self, inputs):
         if self.p > 0. and self.training:
+            keep_p = 1 - self.p
+            keep_p = paddle.to_tensor([keep_p])
+            # B, 1, 1....
+            shape = [inputs.shape[0]] + [1] * (inputs.ndim-1)
+            random_dr = keep_p + paddle.rand(shape=[shape], dtype='float32')
+            random_sample = random_dr.floor() # floor to int--B
+            output = inputs.divide(keep_p) * random_sample
 
-            keep_p = paddle.to_tensor([1 - self.p], dtype='float32')
-            random_tensor = keep_p + paddle.rand([inputs.shape[0]]+\
-                                                 [1]*(inputs.ndim-1),
-                                                 dtype='float32') # shape: [B, 1, 1, 1...]
-            random_tensor = random_tensor.floor() # 二值化，向下取整:[0, 1]
-            # 除以保持率，是保证drop过程中输出的总期望保持不变
-            output = inputs.divide(keep_p) * random_tensor
-
-            return output
-        else:
-            return inputs
+        return inputs
 
 
 class Former(nn.Layer):
-    """Former实现 -- 一个简单的纯transformer结构
-        Params Info:
-            embed_dims: 输入特征数/嵌入维度
-            mlp_ratio: MLP输入特征到隐藏特征的伸缩比例
-            num_head: 注意力头数
-            qkv_bias: 映射层是否使用bias, default: True
-            dropout_rate: 注意力结果丢弃率
-            droppath_rate: DropPath多分支丢弃率
-            attn_dropout_rate: 注意力分布丢弃率
-            mlp_dropout_rate: MLP丢弃率
-            act: 激活函数 -- nn.Layer or nn.functional
-            norm: 归一化层 -- nn.LayerNorm
-        Forward Tips:
-            - 输入数据Shape等于输出数据Shape
-            - 利用注意力机制计算全局信息
+    """Former
     """
     def __init__(self,
                  embed_dims,
-                 mlp_ratio=2,
                  num_head=1,
-                 qkv_bias=True,
+                 mlp_ratio=2,
                  dropout_rate=0.,
                  droppath_rate=0.,
                  attn_dropout_rate=0.,
                  mlp_dropout_rate=0.,
-                 act=nn.GELU,
-                 norm=nn.LayerNorm):
-        super(Former, self).__init__(name_scope="former")
-        self.embed_dims = embed_dims
-        self.mlp_ratio = mlp_ratio
-        self.num_head = num_head
-        self.qkv_bias = qkv_bias
-        self.dropout_rate = dropout_rate
-        self.droppath_rate = droppath_rate
-        self.attn_dropout_rate = attn_dropout_rate
-        self.mlp_dropout_rate = mlp_dropout_rate
+                 norm=nn.LayerNorm,
+                 act=nn.GELU):
+        super(Former, self).__init__(name_scope="Former")
 
         self.attn = Attention(embed_dims=embed_dims,
-                              num_head=num_head,
-                              qkv_bias=qkv_bias,
-                              dropout_rate=dropout_rate,
-                              attn_dropout_rate=attn_dropout_rate)
-        self.mlp = MLP(in_features=embed_dims,
-                       hidden_features=int(mlp_ratio*embed_dims),
-                       dropout_rate=mlp_dropout_rate,
-                       act=act)
-        
-        self.attn_droppath =  DropPath(p=droppath_rate)
-        self.mlp_droppath =  DropPath(p=droppath_rate)
+                                num_head=num_head,
+                                dropout_rate=dropout_rate,
+                                attn_dropout_rate=attn_dropout_rate)
+        self.attn_ln = norm(embed_dims)
+        self.attn_droppath = DropPath(droppath_rate)
 
-        self.attn_norm = norm(embed_dims)
-        self.mlp_norm = norm(embed_dims)
+        self.mlp = MLP(in_features=embed_dims,
+                        mlp_ratio=mlp_ratio,
+                        mlp_dropout_rate=mlp_dropout_rate,
+                        act=act)
+        self.mlp_ln = norm(embed_dims)
+        self.mlp_droppath = DropPath(droppath_rate)
+    
 
     def forward(self, inputs):
-        assert inputs.shape[-1] == self.embed_dims, \
-            "Error: Please make sure the data of input has"+\
-            "the same number of embed_dims(in:{0}) with Former ".format(inputs.shape[-1])+\
-            "Config(set:{0})  in Former.".format(self.embed_dims)
-
         res = inputs
         x = self.attn(inputs)
-        x = self.attn_norm(x)
+        x = self.attn_ln(x)
         x = self.attn_droppath(x)
         x = x + res
 
         res = x
         x = self.mlp(x)
-        x = self.mlp_norm(x)
+        x = self.mlp_ln(x)
         x = self.mlp_droppath(x)
         x = x + res
 
         return x
 
 
-class ToFormer_Bridge(nn.Layer):
-    """ToFormer_Bridge实现 -- Mobile-->Former的结构
-        Params Info:
-            in_channels: 输入特征图通道数
-            embed_dims: 输入特征数/嵌入维度
-            num_head: 注意力头数
-            q_bias: 映射层是否使用bias, default: True
-            dropout_rate: 注意力结果丢弃率
-            droppath_rate: DropPath多分支丢弃率
-            attn_dropout_rate: 注意力分布丢弃率
-            norm: 归一化层 -- nn.LayerNorm
-        Forward Tips:
-            - 输入特征图直接作为Key与Value的序列数据
-            - 输入Token映射为Query的序列数据
-            - 输入Token序列数据进行局部信息交互并输出等大的Token序列数据
-            - 将特征图中提取的局部信息融合进Token的全局信息中
-    """
-    def __init__(self,
-                 in_channels,
-                 embed_dims,
-                 num_head=1,
-                 q_bias=True,
-                 dropout_rate=0.,
-                 droppath_rate=0.,
-                 attn_dropout_rate=0.,
-                 norm=nn.LayerNorm):
-        super(ToFormer_Bridge, self).__init__(name_scope="former_bridge")
-        self.in_channels = in_channels
-        self.embed_dims = embed_dims
-        self.num_head = num_head
-        self.head_dims = in_channels // num_head
-        self.scale = self.head_dims ** -0.5
-        self.q_bias = q_bias
-        self.dropout_rate = dropout_rate
-        self.droppath_rate = droppath_rate
-        self.attn_dropout_rate = attn_dropout_rate
-
-        self.q_proj = nn.Linear(in_features=embed_dims,
-                                out_features=self.num_head*self.head_dims,
-                                bias_attr=q_bias)
-        self.out = nn.Linear(in_features=self.num_head*self.head_dims,
-                             out_features=embed_dims)
-
-        self.softmax = nn.Softmax()
-        self.attn_dropout = nn.Dropout(attn_dropout_rate)
-        self.out_dropout = nn.Dropout(dropout_rate)
-
-        self.out_norm = norm(embed_dims)
-        self.out_droppath = DropPath(p=droppath_rate)
-
-    def transpose_q(self, q):
-        assert q.ndim == 3, \
-            "Error: Please make sure the q has 3 dim,"+\
-            " but now it is {0} dim in ToFormer_Bridge-func:transpose_q.".format(q.ndim)
-        
-        B, M, _ = q.shape
-        q = q.reshape(shape=[B, M, self.num_head, self.head_dims]).transpose(perm=[0, 2, 1, 3])
-        
-        return q # B, num_head, M, head_dims
-    
-    def transform_feature_map(self, feature_map):
-        assert feature_map.ndim == 4, \
-            "Error: Please make sure the feature_map has 4 dim,"+\
-            " but now it is {0} dim in ToFormer_Bridge-func:"+\
-            "transform_feature_map.".format(feature_map.ndim)
-        
-        B, C, H, W = feature_map.shape
-        feature_map = feature_map.reshape(shape=[B, C, H*W]
-                        ).transpose(perm=[0, 2, 1]) # B, L, C or B, N, C
-        feature_map = feature_map.reshape(shape=[B, H*W, self.num_head, self.head_dims])
-        feature_map = feature_map.transpose(perm=[0, 2, 1, 3])
-
-        return feature_map # B, num_head, N, head_dims
-
-    def forward(self, feature_map, z_token):
-        assert feature_map.shape[1] == self.in_channels, \
-            "Error: Please make sure the data of input has "+\
-            "the same number of channels(in:{0}) with ToFormer_Bridge ".format(feature_map.shape[1])+\
-            "Config(set:{0})  in ToFormer_Bridge.".format(self.in_channels)
-        assert z_token.shape[-1] == self.embed_dims, \
-            "Error: Please make sure the data of input has "+\
-            "the same number of embed_dims(in:{0}) with ToFormer_Bridge ".format(z_token.shape[-1])+\
-            "Config(set:{0})  in ToFormer_Bridge.".format(self.embed_dims)
-
-        B, C, H, W = feature_map.shape
-        B, M, D = z_token.shape
-
-        q = self.q_proj(z_token) # B, M, num_head*head_dims
-        q = self.transpose_q(q=q) # B, num_head, M, head_dims
-
-        k = self.transform_feature_map(feature_map=feature_map) # B, num_head, N, head_dims
-        attn = paddle.matmul(q, k, transpose_y=True) # B, num_head, M, N
-        attn = attn * self.scale
-        attn = self.softmax(attn)
-        attn = self.attn_dropout(attn)
-
-        v = self.transform_feature_map(feature_map=feature_map) # B, num_head, N, head_dims
-        z = paddle.matmul(attn, v) # B, num_head, M, head_dims
-        z = z.transpose(perm=[0, 2, 1, 3]).reshape(shape=[B, M, self.num_head*self.head_dims])
-        z = self.out(z)
-        z = self.out_dropout(z)
-
-        # 注意力结果标准处理
-        z = self.out_norm(z)
-        z = self.out_droppath(z)
-        z = z + z_token
-
-        return z
-
-
-class ToMobile_Bridge(nn.Layer):
-    """ToMobile_Bridge实现 -- Former-->Mobile的结构
-        Params Info:
-            in_channels: 输入特征图通道数
-            embed_dims: 输入特征数/嵌入维度
-            num_head: 注意力头数
-            kv_bias: 映射层是否使用bias, default: True
-            dropout_rate: 注意力结果丢弃率
-            droppath_rate: DropPath多分支丢弃率
-            attn_dropout_rate: 注意力分布丢弃率
-            norm: 归一化层 -- nn.LayerNorm
-        Forward Tips:
-            - 输入特征图直接作为Query的序列数据
-            - 输入Token映射为Key与Value的序列数据
-            - 输入特征图数据进行全局信息交互并输出等大的特征图数据
-            - 将Token中提取的全局信息融合进特征图的局部信息中
-    """
-    def __init__(self,
-                 in_channels,
-                 embed_dims,
-                 num_head=1,
-                 kv_bias=True,
-                 dropout_rate=0.,
-                 droppath_rate=0.,
-                 attn_dropout_rate=0.,
-                 norm=nn.LayerNorm):
-        super(ToMobile_Bridge, self).__init__(name_scope="mobile_bridge")
-        self.in_channels = in_channels
-        self.embed_dims = embed_dims
-        self.num_head = num_head
-        self.head_dims = in_channels // num_head
-        self.scale = self.head_dims ** -0.5
-        self.kv_bias = kv_bias
-        self.dropout_rate = dropout_rate
-        self.droppath_rate = droppath_rate
-        self.attn_dropout_rate = attn_dropout_rate
-
-        self.kv_proj = nn.Linear(in_features=embed_dims,
-                                 out_features=2*self.num_head*self.head_dims,
-                                 bias_attr=kv_bias)
-        
-        # to keep the number of channels
-        # not necessary
-        self.keep_information_linear = Identify() if (self.head_dims * self.num_head) !=\
-                                       self.in_channels else \
-                                       nn.Linear(in_features=self.num_head*self.head_dims,
-                                                 out_features=in_channels)
-
-        self.softmax = nn.Softmax()
-        self.attn_dropout = nn.Dropout(attn_dropout_rate)
-        self.out_dropout = nn.Dropout(dropout_rate)
-
-        self.out_norm = norm(in_channels)
-        self.out_droppath = DropPath(p=droppath_rate)
-
-    def transpose_kv(self, kv):
-        assert len(kv) == 2, \
-            "Error: Please make sure the kv has 2 item,"+\
-            " but now it is {0} item in ToMobile_Bridge-func:".format(len(kv))+\
-            "transpose_kv."
-
-        k, v = kv
-        B, M, _ = k.shape
-        # B, num_head, M, head_dims
-        k = k.reshape(shape=[B, M, self.num_head, self.head_dims]).transpose(perm=[0, 2, 1, 3])
-        v = v.reshape(shape=[B, M, self.num_head, self.head_dims]).transpose(perm=[0, 2, 1, 3])
-        
-        return k, v
-
-    def transform_feature_map(self, feature_map):
-        assert feature_map.ndim == 4, \
-            "Error: Please make sure the feature_map has 4 dim,"+\
-            " but now it is {0} dim in ToMobile_Bridge-func:"+\
-            "transform_feature_map.".format(feature_map.ndim)
-
-        B, C, H, W = feature_map.shape
-        feature_map = feature_map.reshape(shape=[B, C, H*W]
-                        ).transpose(perm=[0, 2, 1]) # B, L, C or B, N, C
-        feature_map = feature_map.reshape(shape=[B, H*W, self.num_head, self.head_dims])
-        feature_map = feature_map.transpose(perm=[0, 2, 1, 3])
-
-        return feature_map # B, num_head, N, head_dims
-
-    def forward(self, feature_map, z_token):
-        assert feature_map.shape[1] == self.in_channels, \
-            "Error: Please make sure the data of input has "+\
-            "the same number of channels(in:{0}) with ToMobile_Bridge ".format(feature_map.shape[1])+\
-            "Config(set:{0})  in ToMobile_Bridge.".format(self.in_channels)
-        assert z_token.shape[-1] == self.embed_dims, \
-            "Error: Please make sure the data of input has "+\
-            "the same number of embed_dims(in:{0}) with ToMobile_Bridge ".format(z_token.shape[-1])+\
-            "Config(set:{0})  in ToMobile_Bridge.".format(self.embed_dims)
-
-        B, C, H, W = feature_map.shape # N=H*W
-        B, M, D = z_token.shape
-
-        x = self.kv_proj(z_token)
-        kv = x.chunk(2, axis=-1)
-        k, v = self.transpose_kv(kv=kv) # B, num_head, M, head_dims
-        q = self.transform_feature_map(feature_map=feature_map) # B, num_head, N, head_dims
-
-        attn = paddle.matmul(q, k, transpose_y=True) # B, num_head, N, M
-        attn = attn*self.scale
-        attn = self.softmax(attn)
-        attn = self.attn_dropout(attn)
-
-        z = paddle.matmul(attn, v) # B, num_head, N, head_dims
-        z = z.transpose(perm=[0, 2, 1, 3]) # B, N, num_head, head_dims
-        z = z.reshape(shape=[B, H*W, self.num_head*self.head_dims])
-        z = self.keep_information_linear(z) # keep the number of channels
-        z = self.out_dropout(z)
-
-        # 注意力结果标准处理
-        z = self.out_norm(z)
-        z = self.out_droppath(z)
-        z = z.transpose(perm=[0, 2, 1]).reshape(shape=[B, C, H, W])
-        z = z + feature_map
-
-        return z
-
-
-class DY_ReLU(nn.Layer):
-    """DY_ReLU实现 -- Token作为系数输入，特征图作为激活输入
-        Params Info:
-            in_channels: 输入特征图通道数
-            m: 输入Token长度/序列长度
-            k: 动态参数基数,
-               k=2 --> 每个完整的动态参数集都包含[a_1, a_2] 和[b_1, b_2]，类推 
-            use_mlp: 动态参数映射层是否使用MLP, default:False
-            mlp_ratio: MLP隐藏特征伸缩比例
-            coefs: 计算[a_1, a_2] 和[b_1, b_2]时的系数，超参数，default:[1.0, 0.5]
-            const: 计算[a_1, a_2] 和[b_1, b_2]时的常数，超参数，default:[1.0, 0.0]
-            dy_reduce: 动态参数映射的隐藏映射伸缩比例，基于输入特征图通道数
-        Forward Tips:
-            - 输入特征图作为激活输入
-            - 输入Token作为系数输入
-            - 1.Token数据经过动态参数映射得到的结果，参与[a_1, a_2] 和[b_1, b_2]的计算
-            - 2.每个Token元素(值)都生成一组[a_1(x), a_2(x)] 和[b_1(x), b_2(x)]
-            - 3.将Token生成结果与输入特征图进行交互，沿通道维度作用——每个原始输入生成4个激活可选值
-            - 4.经过max选择最大的作为动态ReLU的输出
-    """
-    def __init__(self,
-                 in_channels,
-                 m=3,
-                 k=2,
-                 use_mlp=False,
-                 mlp_ratio=2,
-                 coefs=[1.0, 0.5],
-                 const=[1.0, 0.0],
-                 dy_reduce=6):
-        super(DY_ReLU, self).__init__(name_scope="dy_relu")
-        self.in_channels = in_channels
-        self.m = m
-        self.k = k
-        self.use_mlp = use_mlp
-        self.mlp_ratio = mlp_ratio
-        self.coefs = coefs # [0]:a系数，[1]:b系数
-        self.const = const # [0]:a初始常数值，[1]:b初始常数值
-        self.dy_reduce = dy_reduce
-
-        # k*in_channels，是为了方便沿通道维度进行动态ReLU计算
-        self.mid_channels = 2*k*in_channels # 乘以2，是为了同时构建a，b的参数群
-
-        # 构建每个a/b的系数
-        # 因为k=2, 因此a和b参数群各有两个系数
-        self.lambda_coefs = paddle.to_tensor([self.coefs[0]]*k+\
-                                             [self.coefs[1]]*k,
-                                             dtype='float32')
-        self.init_consts = paddle.to_tensor([self.const[0]]+\
-                                            [self.const[1]]*(2*k-1),
-                                            dtype='float32')
-
-        # 这里池化Token数据，所以用一维池化
-        self.avg_pool = nn.AdaptiveAvgPool1D(output_size=1)
-        self.project = nn.Sequential(
-            MLP(in_features=m,
-                hidden_features=m*mlp_ratio,
-                out_features=in_channels//dy_reduce) if use_mlp is True else \
-            nn.Linear(in_features=m, out_features=in_channels//dy_reduce),
-            nn.ReLU(),
-            MLP(in_features=in_channels//dy_reduce,
-                hidden_features=(in_channels//dy_reduce)*mlp_ratio,
-                out_features=self.mid_channels) if use_mlp is True else \
-            nn.Linear(in_features=in_channels//dy_reduce, out_features=self.mid_channels),
-            nn.BatchNorm(self.mid_channels)
-        )
-    
-    def forward(self, feature_map, z_token):
-        assert feature_map.shape[1] == self.in_channels, \
-            "Error: Please make sure the feature_map of input has "+\
-            "the same number of channels(in:{0}) with DY_ReLU ".format(feature_map.shape[1])+\
-            "Config(set:{0})  in DY_ReLU.".format(self.in_channels)
-        assert z_token.shape[1] == self.m, \
-            "Error: Please make sure the z_token of input has "+\
-            "the same number of sequence(in:{0}) with DY_ReLU ".format(z_token.shape[1])+\
-            "Config(set:{0})  in DY_ReLU.".format(self.m)
-
-        B, C, H, W = feature_map.shape
-        B, M, _ = z_token.shape
-        x = self.avg_pool(z_token) # B, M, 1
-        x = x.reshape(shape=[B, M]) # B, M
-        x = self.project(x) # B, 2*K*C
-        x = x.reshape(shape=[B, C, 2*self.k]) # B, C, 2*K
-
-        # 利用超参数计算动态系数
-        dy_coef = x * self.lambda_coefs + self.init_consts # B, C, 2*K
-        # 其中，2*K包含a参数群与b参数群
-        # a为代入系数，b为带入偏置(bias)
-        # 动态ReLU，激活值计算函数: f(x)_k = a_k*x + b_k
-        # 这里计算通道上的动态ReLU交互
-        x_perm = feature_map.transpose(perm=[2, 3, 0, 1]) # H, W, B, C
-        # 此时，再添加一个最低维度——对齐: B, C, 2*K, 以保证广播运算
-        x_perm = x_perm.unsqueeze(-1) # H, W, B, C, 1
-
-        # 实现: f(x)_k = a_k*x + b_k
-        output = x_perm * dy_coef[:, :, :self.k] + dy_coef[:, :, self.k:] # H, W, B, C, K
-        # 最后执行激活输出，判断函数为: max(c_f(x)_k)
-        # 沿着通道维度向下进行max取值
-        output = paddle.max(output, axis=-1) # H, W, B, C
-        # 还原输入特征图形式
-        output = output.transpose(perm=[2, 3, 0, 1]) # H, W, B, C
-
-        return output
-
-
-class Mobile(nn.Layer):
-    """Mobile实现 -- 特征图作为特征输入，Token作为参数选择输入(DY_ReLU)
-        Params Info:
-            in_channels: 输入特征图通道数
-            out_channels: 输出特征图通道数
-            t: Bottle结构中的通道伸缩比例
-            m: 输入Token长度/序列长度
-            kernel_size: 卷积核大小
-            stride: 步长大小
-            padding: 填充大小
-            k: 动态参数基数,
-               k=2 --> 每个完整的动态参数集都包含[a_1, a_2] 和[b_1, b_2]，类推 
-            use_mlp: 动态参数映射层是否使用MLP, default:False
-            coefs: 计算[a_1, a_2] 和[b_1, b_2]时的系数，超参数，default:[1.0, 0.5]
-            const: 计算[a_1, a_2] 和[b_1, b_2]时的常数，超参数，default:[1.0, 0.0]
-            dy_reduce: 动态参数映射的隐藏映射伸缩比例，基于输入特征图通道数
-            groups: 1x1卷积分组数
-            mlp_ratio: MLP隐藏特征伸缩比例
-        Forward Tips:
-            - 输入特征图作为特征输入
-            - 输入Token作为参数选择输入(DY_ReLU)
-            - 1.如果stride为2，则额外添加一次下采样--利用DepthWise_Conv + BacthNorm2D + DY_ReLU
-            - 2.输入特征图进入Bottle结构，顺序经过PW，DY_ReLU，DW，DY_ReLU，PW
-            - 3.Token参数进入DY_ReLU中提供动态参数
-            - 4.输出特征提取后的特征图
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 t=4,
-                 m=3,
-                 kernel_size=3,
-                 stride=1,
-                 padding=0,
-                 k=2,
-                 use_mlp=False,
-                 coefs=[1.0, 0.5],
-                 const=[1.0, 0.0],
-                 dy_reduce=6,
-                 mlp_ratio=2,
-                 groups=1):
-        super(Mobile, self).__init__(name_scope="mobile")
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.t = t
-        self.m = m
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.k = k
-        self.use_mlp = use_mlp
-        self.coefs = coefs
-        self.const = const
-        self.dy_reduce = dy_reduce
-        self.mlp_ratio = mlp_ratio
-        self.groups = groups
-
-        if stride == 2:
-            self.downsample = nn.Sequential(
-                DepthWise_Conv(in_channels=in_channels,
-                                kernel_size=kernel_size,
-                                stride=stride,
-                                padding=padding),
-                nn.BatchNorm2D(in_channels)
-            )
-            self.downsample_act = DY_ReLU(in_channels=in_channels,
-                                            m=m, k=k, use_mlp=use_mlp,
-                                            coefs=coefs, const=const,
-                                            dy_reduce=dy_reduce,
-                                            mlp_ratio=mlp_ratio)
-        else:
-            self.downsample = Identify()
-        
-        self.in_pointwise_conv = nn.Sequential(
-            PointWise_Conv(in_channels=in_channels,
-                           out_channels=int(t * in_channels),
-                           groups=groups),
-            nn.BatchNorm2D(int(t * in_channels))
-        )
-        self.in_pointwise_conv_act = DY_ReLU(in_channels=int(t * in_channels),
-                                                m=m, k=k, use_mlp=use_mlp,
-                                                coefs=coefs, const=const,
-                                                dy_reduce=dy_reduce,
-                                                mlp_ratio=mlp_ratio)
-
-        self.hidden_depthwise_conv = nn.Sequential(
-            DepthWise_Conv(in_channels=int(t * in_channels),
-                           kernel_size=kernel_size,
-                           stride=1,
-                           padding=1),
-            nn.BatchNorm2D(int(t * in_channels))
-        )
-        self.hidden_depthwise_conv_act = DY_ReLU(in_channels=int(t * in_channels),
-                                                    m=m, k=k, use_mlp=use_mlp,
-                                                    coefs=coefs, const=const,
-                                                    dy_reduce=dy_reduce,
-                                                    mlp_ratio=mlp_ratio)
-
-        self.out_pointwise_conv = nn.Sequential(
-            PointWise_Conv(in_channels=int(t * in_channels),
-                           out_channels=out_channels,
-                           groups=groups),
-            nn.BatchNorm2D(out_channels)
-        )
-
-    def forward(self, feature_map, z_token):
-        assert feature_map.shape[1] == self.in_channels, \
-            "Error: Please make sure the feature_map of input has "+\
-            "the same number of channels(in:{0}) with Mobile ".format(feature_map.shape[1])+\
-            "Config(set:{0})  in Mobile.".format(self.in_channels)
-        assert z_token.shape[1] == self.m, \
-            "Error: Please make sure the z_token of input has "+\
-            "the same number of sequence(in:{0}) with Mobile ".format(z_token.shape[1])+\
-            "Config(set:{0})  in Mobile.".format(self.m)
-
-        x = self.downsample(feature_map)
-        if self.stride == 2:
-            x = self.downsample_act(x, z_token)
-        x = self.in_pointwise_conv(x)
-        x = self.in_pointwise_conv_act(x, z_token)
-        x = self.hidden_depthwise_conv(x)
-        x = self.hidden_depthwise_conv_act(x, z_token)
-        x = self.out_pointwise_conv(x)
-
-        return x
-
-
-class Stem(nn.Layer):
-    """渐入层 -- 使用V3的Hardswish激活函数
-        Params Info:
-            in_channels: 输入特征图通道数
-            out_channels: 输出特征图通道数
-            kernel_size: 卷积核大小
-            stride: 步长大小
-            padding: 填充大小
-            act: 激活函数 -- nn.Layer or nn.functional
-        Forward Tips:
-            - 可以直接替换激活函数 -- nn.ReLU等
-            - 动态ReLU需要内部配置，直接设置act无效
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size=3,
-                 stride=1,
-                 padding=0,
-                 act=nn.Hardswish):
-        super(Stem, self).__init__(name_scope="stem")
-        self.in_channels = in_channels
-        self.out_channels = in_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        
-        self.conv = nn.Conv2D(in_channels=in_channels,
-                              out_channels=out_channels,
-                              kernel_size=kernel_size,
-                              stride=stride,
-                              padding=padding)
-
-        self.bn = nn.BatchNorm2D(out_channels)
-        self.act = act()
-    
-    def forward(self, inputs):
-        assert inputs.shape[1] == self.in_channels, \
-            "Error: Please make sure the data of input has "+\
-            "the same number of channels(in:{0}) with Stem ".format(inputs.shape[1])+\
-            "Config(set:{0})  in Stem.".format(self.in_channels)
-
-        x = self.conv(inputs)
-        x = self.bn(x)
-        x = self.act(x)
-
-        return x
-
-
-class Lite_BottleNeck(nn.Layer):
-    """轻量BottleNeck -- 针对DepthWise_Conv进行卷积分解，使用激活函数ReLU6
-        Params Info:
-            in_channels: 输入特征图通道数
-            hidden_channels: 深度卷积中通道渐变后的通道数
-            out_channels: 输出特征图通道数
-            expands: 深度卷积中通道第一次渐变的伸缩比例，1/expands
-            kernel_size: 卷积核大小
-            stride: 步长大小
-            padding: 填充大小
-            act: 激活函数 -- nn.Layer or nn.functional
-            groups: 1x1卷积分组数
-        Forward Tips:
-            - 可以直接替换激活函数 -- nn.ReLU等
-            - DepthWise_Conv被分解，因此计算更轻量
+class MFBlock(nn.Layer):
+    """MobileFormer的基本组成单元
     """
     def __init__(self,
                  in_channels,
                  hidden_channels,
                  out_channels,
-                 expands=2,
+                 embed_dims,
                  kernel_size=3,
                  stride=1,
                  padding=0,
-                 act=nn.ReLU6,
-                 groups=1):
-        super(Lite_BottleNeck, self).__init__(name_scope="lite_bneck")
-        self.in_channels = in_channels
-        self.hidden_channels = hidden_channels
-        self.out_channels = out_channels
-        self.expands = expands
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.groups = groups
-
-        first_filter = [kernel_size, 1]
-        first_stride = [stride, 1]
-        first_padding = [padding, 0]
-        second_filter = [1, kernel_size]
-        second_stride = [1, stride]
-        second_padding = [0, padding]
-
-        expands_channels = hidden_channels - in_channels
-        self.lite_depthwise_conv = nn.Sequential(
-            nn.Conv2D(in_channels=in_channels,
-                      out_channels=hidden_channels - expands_channels // expands,
-                      kernel_size=first_filter,
-                      stride=first_stride,
-                      padding=first_padding,
-                      groups=self.Gcd(in_channels=in_channels,
-                                      hidden_channels=hidden_channels - \
-                                          expands_channels // expands)),
-            nn.BatchNorm2D(hidden_channels - \
-                            expands_channels // expands),
-            nn.Conv2D(in_channels=hidden_channels - \
-                                  expands_channels // expands,
-                      out_channels=hidden_channels,
-                      kernel_size=second_filter,
-                      stride=second_stride,
-                      padding=second_padding,
-                      groups=self.Gcd(hidden_channels=hidden_channels,
-                                      in_channels=hidden_channels - \
-                                          expands_channels // expands)),
-            nn.BatchNorm2D(hidden_channels),
-            act()
-        )
-
-        self.pointwise_conv = nn.Sequential(
-            PointWise_Conv(in_channels=hidden_channels,
-                           out_channels=out_channels,
-                           groups=groups),
-            nn.BatchNorm2D(out_channels),
-        )
-
-    def Gcd(self, in_channels, hidden_channels):
-        """欧几里得取最大group数
-        """
-        m = in_channels
-        n = hidden_channels
-        r = 0
-        while n > 0:
-            r = m % n
-            m = n
-            n = r
-
-        return m
-    
-    def forward(self, inputs):
-        assert inputs.shape[1] == self.in_channels, \
-            "Error: Please make sure the data of input has"+\
-            "the same number of channels(in:{0}) with Lite_BottleNeck ".format(inputs.shape[1])+\
-            "Config(set:{0})  in Lite_BottleNeck.".format(self.in_channels)
-        
-        x = self.lite_depthwise_conv(inputs)
-        x = self.pointwise_conv(x)
-
-        return x
-
-
-class Classifier_Head(nn.Layer):
-    """Classifier_Head -- 输出分类结果
-        Params Info:
-            in_channels: 输入特征图通道数
-            embed_dims: 输出Token嵌入维度
-            expands: 深度卷积中通道渐变的伸缩比例
-            num_classes: 分类数
-            head_type: 分类头类型，自动调节不同模型的隐藏层大小
-            act: 激活函数 -- nn.Layer or nn.functional
-        Forward Tips:
-            - 可以直接替换激活函数 -- nn.ReLU等
-    """
-    def __init__(self,
-                 in_channels,
-                 embed_dims,
-                 num_classes,
-                 head_type='base',
-                 act=nn.Hardswish):
-        super(Classifier_Head, self).__init__(name_scope="head")
-        self.in_channels = in_channels
-        self.embed_dims = embed_dims
-        self.num_classes = num_classes
-        self.head_type = head_type
-
-        self.head_hidden_size = get_head_hidden_size(head_type)
-
-        self.avg_pool = nn.AdaptiveAvgPool2D(output_size=1)
-        self.fc = nn.Linear(in_features=in_channels + embed_dims,
-                            out_features=self.head_hidden_size)
-        self.out = nn.Linear(in_features=self.head_hidden_size,
-                            out_features=num_classes)
-
-        self.flatten = nn.Flatten()
-        self.act = act()
-        self.softmax = nn.Softmax()
-    
-    def forward(self, feature_map, z_token):
-        assert feature_map.shape[1] == self.in_channels, \
-            "Error: Please make sure the feature_map of input has "+\
-            "the same number of channels(in:{0}) with Classifier_Head ".format(feature_map.shape[1])+\
-            "Config(set:{0})  in Classifier_Head.".format(self.in_channels)
-        assert z_token.shape[-1] == self.embed_dims, \
-            "Error: Please make sure the z_token of input has "+\
-            "the same number of embed_dims(in:{0}) with Classifier_Head ".format(z_token.shape[-1])+\
-            "Config(set:{0})  in Classifier_Head.".format(self.embed_dims)
-
-        x = self.avg_pool(feature_map)
-        x = self.flatten(x) # B, C
-
-        cls_token = z_token[:, 0] # B, D
-        x = paddle.concat([x, cls_token], axis=-1) # B, C+D
-
-        x = self.fc(x)
-        x = self.act(x)
-        x = self.out(x)
-        x = self.softmax(x)
-
-        return x
-
-
-class Basic_Block(nn.Layer):
-    """MobileFormer最小基础模块
-        Params Info:
-            embed_dims: 嵌入维度
-            in_channels: 输入通道数
-            out_channels: 输出通道数
-            num_head: 注意力头数, default:1
-            mlp_ratio: MLP隐藏特征伸缩比例, default:2
-            q_bias: Mobile-->Former是否使用bias, default:True
-            kv_bias: Former-->Mobile是否使用bias, default:True
-            qkv_bias: Former是否使用bias, default:True
-            dropout_rate: 注意力结果丢弃率, default:0.
-            droppath_rate: DropPath多分支丢弃率, default:0.
-            attn_dropout_rate: 注意力分布丢弃率, default:0.
-            mlp_dropout_rate: 多层感知机丢弃率, default:0.
-            t: 深度可分离卷积中隐藏通道伸缩比例, default:1
-            m: Token序列长度, default:6
-            kernel_size: 卷积核大小, default:3
-            stride: 步长大小, default:1
-            padding: 填充大小, default:0
-            k: 动态ReLU参数个数, default:2
-            use_mlp: 计算动态ReLU的动态参数时是否使用MLP进行映射, default:False
-            coefs: 动态参数系数, default:[1.0, 0.5]
-            const: 动态参数初始常量, default:[1.0, 0.0]
-            dy_reduce: 动态参数映射隐藏特征伸缩比例, default:6
-            groups: 1x1卷积分组数, default:1
-            add_pointwise_conv: 是否额外添加1x1卷积, default:False
-            pointwise_conv_channels: 额外卷积拓展通道数, default:None,
-                                     若add_pointwise_conv不为False，则该值应该被填充
-            act: 激活函数 -- nn.Layer or nn.functional
-            norm: 归一化层 -- nn.LayerNorm
-        Forward Tips:
-            - ToFormer_Bridge --> Former --> Mobile --> ToMobile_Bridge
-    """
-    def __init__(self,
-                 embed_dims,
-                 in_channels,
-                 out_channels,
+                 groups=1,
+                 k=2,
+                 coefs=[1.0, 0.5],
+                 consts=[1.0, 0.0],
+                 reduce=4,
+                 use_dyrelu=False,
                  num_head=1,
                  mlp_ratio=2,
-                 q_bias=True,
-                 kv_bias=True,
-                 qkv_bias=True,
                  dropout_rate=0.,
                  droppath_rate=0.,
                  attn_dropout_rate=0.,
                  mlp_dropout_rate=0.,
-                 t=1,
-                 m=6,
-                 kernel_size=3,
-                 stride=1,
-                 padding=0,
-                 k=2,
-                 use_mlp=False,
-                 coefs=[1.0, 0.5],
-                 const=[1.0, 0.0],
-                 dy_reduce=6,
-                 groups=1,
-                 add_pointwise_conv=False,
-                 pointwise_conv_channels=None,
-                 act=nn.GELU,
-                 norm=nn.LayerNorm):
-        super(Basic_Block, self).__init__(name_scope="basic_block")
-        self.embed_dims = embed_dims
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.num_head = num_head
-        self.mlp_ratio = mlp_ratio
-        self.q_bias = q_bias
-        self.kv_bias = kv_bias
-        self.qkv_bias = qkv_bias
-        self.dropout_rate = dropout_rate
-        self.droppath_rate = droppath_rate
-        self.attn_dropout_rate = attn_dropout_rate
-        self.mlp_dropout_rate = mlp_dropout_rate
-        self.t = t
-        self.m = m
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.k = k
-        self.use_mlp = use_mlp
-        self.coefs = coefs
-        self.const = const
-        self.dy_reduce = dy_reduce
-        self.use_mlp = use_mlp
-        self.add_pointwise_conv = add_pointwise_conv
-        self.pointwise_conv_channels = pointwise_conv_channels
-        self.groups = groups
-
+                 norm=nn.LayerNorm,
+                 act=nn.GELU):
+        super(MFBlock, self).__init__(
+                 name_scope="MFBlock")
         self.mobile = Mobile(in_channels=in_channels,
+                             hidden_channels=hidden_channels,
                              out_channels=out_channels,
-                             t=t, m=m, kernel_size=kernel_size,
-                             stride=stride, padding=padding, k=k,
-                             use_mlp=use_mlp, coefs=coefs,
-                             const=const, dy_reduce=dy_reduce,
-                             mlp_ratio=mlp_ratio, groups=groups)
-
-        self.toformer_bridge = ToFormer_Bridge(in_channels=in_channels,
-                                               embed_dims=embed_dims,
+                             kernel_size=kernel_size,
+                             stride=stride,
+                             padding=padding,
+                             groups=groups,
+                             embed_dims=embed_dims,
+                             k=k,
+                             coefs=coefs,
+                             consts=consts,
+                             reduce=reduce,
+                             use_dyrelu=use_dyrelu)
+        
+        self.toformer_bridge = ToFormer_Bridge(embed_dims=embed_dims,
+                                               in_channels=in_channels,
                                                num_head=num_head,
-                                               q_bias=q_bias,
                                                dropout_rate=dropout_rate,
-                                               droppath_rate=droppath_rate,
-                                               attn_dropout_rate=attn_dropout_rate,
-                                               norm=norm)
+                                               attn_dropout_rate=attn_dropout_rate)
         
         self.former = Former(embed_dims=embed_dims,
-                             mlp_ratio=mlp_ratio,
                              num_head=num_head,
-                             qkv_bias=qkv_bias,
-                             dropout_rate=dropout_rate,
-                             droppath_rate=droppath_rate,
-                             attn_dropout_rate=attn_dropout_rate,
+                             mlp_ratio=mlp_ratio,
+                             dropout_rate=droppath_rate,
                              mlp_dropout_rate=mlp_dropout_rate,
-                             act=act,
-                             norm=norm)
-        
+                             attn_dropout_rate=attn_dropout_rate,
+                             droppath_rate=droppath_rate,
+                             norm=norm,
+                             act=act)
+
         self.tomobile_bridge = ToMobile_Bridge(in_channels=out_channels,
                                                embed_dims=embed_dims,
                                                num_head=num_head,
-                                               kv_bias=kv_bias,
                                                dropout_rate=dropout_rate,
-                                               droppath_rate=droppath_rate,
-                                               attn_dropout_rate=attn_dropout_rate,
-                                               norm=norm)
-        
-        if add_pointwise_conv == True:
-            self.extra_toformer_bridge = ToFormer_Bridge(in_channels=out_channels,
-                                                            embed_dims=embed_dims,
-                                                            num_head=num_head,
-                                                            q_bias=q_bias,
-                                                            dropout_rate=dropout_rate,
-                                                            droppath_rate=droppath_rate,
-                                                            attn_dropout_rate=attn_dropout_rate,
-                                                            norm=norm)
-            self.pointwise_conv = PointWise_Conv(in_channels=out_channels,
-                                                 out_channels=pointwise_conv_channels,
-                                                 groups=groups)
-        else:
-            self.pointwise_conv = Identify()
+                                               attn_dropout_rate=attn_dropout_rate)
     
-    def forward(self, feature_map, z_token):
-        assert feature_map.shape[1] == self.in_channels, \
-            "Error: Please make sure the feature_map of input has "+\
-            "the same number of channels(in:{0}) with Basic_Block ".format(feature_map.shape[1])+\
-            "Config(set:{0})  in Basic_Block.".format(self.in_channels)
-        assert z_token.shape[-1] == self.embed_dims, \
-            "Error: Please make sure the z_token of input has "+\
-            "the same number of embed_dims(in:{0}) with Basic_Block ".format(z_token.shape[-1])+\
-            "Config(set:{0})  in Basic_Block.".format(self.embed_dims)
+    def forward(self, feature_map, tokens):
+        z_h = self.toformer_bridge(feature_map, tokens)
+        z_out = self.former(z_h)
 
-        z = self.toformer_bridge(feature_map, z_token)
-        z = self.former(z)
+        f_h = self.mobile(feature_map, z_out)
+        f_out = self.tomobile_bridge(f_h, z_out)
 
-        x = self.mobile(feature_map, z)
-        output_x = self.tomobile_bridge(x, z)
-
-        if self.add_pointwise_conv == True:
-            # 最后一次融入局部信息的全局交互
-            z = self.extra_toformer_bridge(output_x, z)
-
-        output_x = self.pointwise_conv(output_x)
-
-        return output_x, z
+        return f_out, z_out
 
 
 class MobileFormer(nn.Layer):
-    """MobileFormer组网实现
+    """MobileFormer
     """
     def __init__(self,
                  num_classes=1000,
                  in_channels=3,
-                 model_type='base',
-                 alpha=1.0,
-                 print_info=False):
+                 model_type='26m',
+                 mlp_ratio=2,
+                 k=2,
+                 coefs=[1.0, 0.5],
+                 consts=[1.0, 0.0],
+                 use_dyrelu=True,
+                 dropout_rate=0,
+                 droppath_rate=0,
+                 attn_dropout_rate=0,
+                 mlp_dropout_rate=0,
+                 norm=nn.LayerNorm,
+                 act=nn.GELU,
+                 alpha=1.0):
         super(MobileFormer, self).__init__()
-        self.num_classes = num_classes
-        self.in_channels = in_channels
-        self.model_type = model_type
-        self.alpha = alpha
+        from configs import update_config
+        self.net_config, self.token_config,\
+        reduce, num_head, groups = update_config(in_channels=in_channels,
+                                            model_type=model_type)
+        self.reduce = reduce
+        self.num_head = num_head
+        self.groups = groups
+        # this create a learnable paramater
+        self.create_token(self.token_config[0], self.token_config[1])
+        embed_dims = self.token_config[1]
 
-        self.net_configs = MobileFormer_Config(model_type=model_type,
-                                               alpha=alpha, print_info=print_info)
-        self.build_model() # 构建模型基本配置
-
-        self.global_token = self.create_parameter(shape=[1, self.m, self.embed_dims],
-                                dtype='float32', attr=nn.initializer.KaimingUniform())
-
-        self.stem = self.create_stem()
-
-        self.bneck_lite = self.create_bneck_lite()
-
-        self.mf_blocks = self.create_mf_blocks()
-
-        self.head = self.create_head()
-
-    def build_model(self):
-        """构建模型的基本配置
-        """
-        base_cfg = self.net_configs['base_cfg']
-        self.m = base_cfg[0]
-        self.embed_dims = base_cfg[1]
-        self.num_head = base_cfg[2]
-        self.mlp_ratio = base_cfg[3]
-        self.q_bias = base_cfg[4]
-        self.kv_bias = base_cfg[5]
-        self.qkv_bias = base_cfg[6]
-        self.dropout_rate = base_cfg[7]
-        self.droppath_rate = base_cfg[8]
-        self.attn_dropout_rate = base_cfg[9]
-        self.mlp_dropout_rate = base_cfg[10]
-        self.k = base_cfg[11]
-        self.use_mlp = base_cfg[12]
-        self.coefs = base_cfg[13]
-        self.const = base_cfg[14]
-        self.dy_reduce = base_cfg[15]
-        self.groups = base_cfg[16]
-
-    def create_stem(self):
-        """构建渐入层
-        """
-        return Stem(in_channels=self.net_configs['stem'][0],
-                    out_channels=self.net_configs['stem'][1],
-                    kernel_size=self.net_configs['stem'][2],
-                    stride=self.net_configs['stem'][3],
-                    padding=self.net_configs['stem'][4],
-                    act=self.net_configs['stem'][5])
-
-    def create_bneck_lite(self):
-        """构建BottleNeck-Lite结构
-        """
-        return Lite_BottleNeck(in_channels=self.net_configs['bneck-lite'][0],
-                               hidden_channels=self.net_configs['bneck-lite'][1],
-                               out_channels=self.net_configs['bneck-lite'][2],
-                               expands=self.net_configs['bneck-lite'][3],
-                               kernel_size=self.net_configs['bneck-lite'][4],
-                               stride=self.net_configs['bneck-lite'][5],
-                               padding=self.net_configs['bneck-lite'][6],
-                               act=self.net_configs['bneck-lite'][7],
-                               groups=self.groups)
-
-    def create_mf_blocks(self):
-        """构建MF块
-        """
-        blocks = []
-        blocks_config = self.net_configs['MF']
-        blocks_depth = len(blocks_config)
-
-        for i in range(blocks_depth):
-            blocks.append(
-                Basic_Block(embed_dims=self.embed_dims,
-                            in_channels=blocks_config[i][0],
-                            out_channels=blocks_config[i][1],
-                            num_head=self.num_head,
-                            mlp_ratio=self.mlp_ratio,
-                            q_bias=self.q_bias,
-                            kv_bias=self.kv_bias,
-                            qkv_bias=self.qkv_bias,
-                            dropout_rate=self.dropout_rate,
-                            droppath_rate=self.droppath_rate,
-                            attn_dropout_rate=self.attn_dropout_rate,
-                            mlp_dropout_rate=self.mlp_dropout_rate,
-                            t=blocks_config[i][2],
-                            m=self.m,
-                            kernel_size=blocks_config[i][3],
-                            stride=blocks_config[i][4],
-                            padding=blocks_config[i][5],
-                            k=self.k,
-                            use_mlp=self.use_mlp,
-                            coefs=self.coefs,
-                            const=self.const,
-                            dy_reduce=self.dy_reduce,
-                            add_pointwise_conv=blocks_config[i][6],
-                            pointwise_conv_channels=blocks_config[i][7],
-                            act=blocks_config[i][8],
-                            norm=blocks_config[i][9],
-                            groups=self.groups)
+        self.stem = Stem(in_channels=self.net_config[0][0],
+                         out_channels=int(alpha * self.net_config[0][1]),
+                         kernel_size=self.net_config[0][2],
+                         stride=self.net_config[0][3],
+                         padding=self.net_config[0][4])
+        self.bneck_lite = BottleNeck(in_channels=int(alpha * self.net_config[1][0]),
+                                     hidden_channels=int(alpha * self.net_config[1][1]),
+                                     out_channels=int(alpha * self.net_config[1][2]),
+                                     groups=groups,
+                                     kernel_size=self.net_config[1][3],
+                                     stride=self.net_config[1][4],
+                                     padding=self.net_config[1][5],
+                                     use_dyrelu=False,
+                                     is_lite=True)
+    
+        self.blocks = []
+        for i in range(2, len(self.net_config)-2):
+            self.blocks.append(
+                MFBlock(
+                    in_channels=int(alpha * self.net_config[i][0]),
+                    hidden_channels=int(alpha * self.net_config[i][1]),
+                    out_channels=int(alpha * self.net_config[i][2]),
+                    embed_dims=embed_dims,
+                    kernel_size=self.net_config[i][3],
+                    stride=self.net_config[i][4],
+                    padding=self.net_config[i][5],
+                    groups=groups,
+                    k=k,
+                    coefs=coefs,
+                    consts=consts,
+                    reduce=reduce,
+                    use_dyrelu=use_dyrelu,
+                    num_head=num_head,
+                    mlp_ratio=mlp_ratio,
+                    dropout_rate=dropout_rate,
+                    droppath_rate=droppath_rate,
+                    attn_dropout_rate=attn_dropout_rate,
+                    mlp_dropout_rate=mlp_dropout_rate,
+                    norm=norm,
+                    act=act
+                )
             )
+        self.blocks = nn.LayerList(self.blocks)
+        
+        self.pw = nn.Sequential(
+            PointWiseConv(in_channels=int(alpha * self.net_config[-2][0]),
+                          out_channels=self.net_config[-2][1],
+                          groups=groups),
+            nn.BatchNorm2D(self.net_config[-2][1]),
+            nn.ReLU()
+        )
 
-        blocks = nn.LayerList(blocks)
+        self.head = Classifier_Head(in_channels=self.net_config[-1][0],
+                                    embed_dims=embed_dims,
+                                    hidden_features=self.net_config[-1][1],
+                                    num_classes=num_classes)
 
-        return blocks
 
-    def create_head(self):
-        """创建分类头
-        """
-        return Classifier_Head(in_channels=self.net_configs['head'][0],
-                               embed_dims=self.embed_dims,
-                               num_classes=self.num_classes,
-                               head_type=self.net_configs['head'][1],
-                               act=self.net_configs['head'][2]
-                              )
-
-    def create_token(self, B):
-        """为Batch数据构建合适的Token序列张量
-        """
-        z_token = paddle.concat([self.global_token]*B)
-        return z_token
+    def create_token(self, token_size, embed_dims):
+        # B(1), token_size, embed_dims
+        shape = [1, token_size, embed_dims]
+        self.tokens = self.create_parameter(shape=shape, dtype='float32')
+    
+    def to_batch_tokens(self, batch_size):
+        # B, token_size, embed_dims
+        return paddle.concat([self.tokens]*batch_size,  axis=0)
 
     def forward(self, inputs):
-        z_token = self.create_token(inputs.shape[0])
+        B, _, _, _ = inputs.shape
+        # create batch tokens
+        tokens = self.to_batch_tokens(B) # B, token_size, embed_dims
 
-        x = self.stem(inputs)
-        x = self.bneck_lite(x)
+        f = self.stem(inputs)
+        f = self.bneck_lite(f, tokens)
 
-        for b in self.mf_blocks:
-            x, z_token = b(x, z_token)
+        for b in self.blocks:
+            f, tokens = b(f, tokens)
         
-        x = self.head(x, z_token)
+        f = self.pw(f)
 
-        return x
+        output = self.head(f, tokens)
+
+        return output
 
 
-def MobileFormer_Big(num_classes,
-                      in_channels,
-                      alpha=1.0, print_info=False):
-    """构建Big-MobileFormer模型
-    """
-    return MobileFormer(num_classes=num_classes,
-                        in_channels=in_channels,
-                        model_type='big',
-                        alpha=alpha, print_info=print_info)
+def check_model_size(model_class, model_type):
+    model = model_class(model_type=model_type)
+    paddle.save(model.state_dict(), '_' + model_type + '.pdparams')
 
-def MobileFormer_Base(num_classes,
-                      in_channels,
-                      alpha=1.0, print_info=False):
-    """构建Base-MobileFormer模型
-    """
-    return MobileFormer(num_classes=num_classes,
-                        in_channels=in_channels,
-                        model_type='base',
-                        alpha=alpha, print_info=print_info)
+    model = paddle.Model(model)
+    model_size = model.summary(input_size=(1, 3, 224, 224))['total_params'] / 1000000
+    print('----Model [{0}] Size Compare(with paper)----'.format(model_type))
+    if model_type == '26m':
+        print('(Compare to paper )The now model is more than {0:.4f}M.'.format(model_size - 3.2))
+        return
+    elif model_type == '52m':
+        print('The now model is more than {0:.4f}M.'.format(model_size - 3.5))
+        return
+    elif model_type == '96m':
+        print('The now model is more than {0:.4f}M.'.format(model_size - 4.6))
+        return
+    elif model_type == '151m':
+        print('The now model is more than {0:.4f}M.'.format(model_size - 7.6))
+        return
+    elif model_type == '214m':
+        print('The now model is more than {0:.4f}M.'.format(model_size - 9.4))
+        return
+    elif model_type == '294m':
+        print('The now model is more than {0:.4f}M.'.format(model_size - 11.4))
+        return
 
-def MobileFormer_Base_Small(num_classes,
-                      in_channels,
-                      alpha=1.0, print_info=False):
-    """构建Base_Small-MobileFormer模型
-    """
-    return MobileFormer(num_classes=num_classes,
-                        in_channels=in_channels,
-                        model_type='base_small',
-                        alpha=alpha, print_info=print_info)
+    print('The now model is more than {0:.4f}M.'.format(model_size - 14.0))
 
-def MobileFormer_Mid(num_classes,
-                      in_channels,
-                      alpha=1.0, print_info=False):
-    """构建Mid-MobileFormer模型
-    """
-    return MobileFormer(num_classes=num_classes,
-                        in_channels=in_channels,
-                        model_type='mid',
-                        alpha=alpha, print_info=print_info)
 
-def MobileFormer_Mid_Small(num_classes,
-                      in_channels,
-                      alpha=1.0, print_info=False):
-    """构建Mid_Small-MobileFormer模型
-    """
-    return MobileFormer(num_classes=num_classes,
-                        in_channels=in_channels,
-                        model_type='mid_small',
-                        alpha=alpha, print_info=print_info)
-
-def MobileFormer_Small(num_classes,
-                      in_channels,
-                      alpha=1.0, print_info=False):
-    """构建Small-MobileFormer模型
-    """
-    return MobileFormer(num_classes=num_classes,
-                        in_channels=in_channels,
-                        model_type='small',
-                        alpha=alpha, print_info=print_info)
-
-def MobileFormer_Tiny(num_classes,
-                      in_channels,
-                      alpha=1.0, print_info=False):
-    """构建Tiny-MobileFormer模型
-    """
-    return MobileFormer(num_classes=num_classes,
-                        in_channels=in_channels,
-                        model_type='tiny',
-                        alpha=alpha, print_info=print_info)
 
 
 if __name__ == "__main__":
-    data = paddle.empty((1, 3, 224, 224))
-    model = MobileFormer_Base(num_classes=1000, in_channels=3)
-    # y_pred = model(data)
-    # print(y_pred.shape)
-
-    # summary
-    # model = paddle.Model(model)
-    # print(model.summary(input_size=(1, 3, 224, 224)))
-
-    # flops
-    print(paddle.flops(model, input_size=(1, 3, 224, 224),
-                       print_detail=True))
+    model_type = '26m'
+    check_model_size(MobileFormer, model_type)
+    """Model Compare
+        Name    Params   Review_Size    Save_Model_Size(.pdparams)
+        508M:   14.0M       13.982M          54.724M
+        294M:   11.4M       11.390M          44.601M
+        214M:   9.4M        9.411M           36.843M
+        151M:   7.6M        7.612M           29.814M
+        96M:    4.6M        4.602M           18.036M
+        52M:    3.5M        3.502M           13.737M
+        26M:    3.2M        3.207M           12.586M
+    """
