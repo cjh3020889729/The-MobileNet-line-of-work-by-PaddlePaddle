@@ -138,12 +138,11 @@ The MobileNet line of work by PaddlePaddle
     - <a href="https://arxiv.org/abs/2108.05895" target="_blank">`Go to Read Paper`</a>
     - `done date`: `2021-11-13`
     - 模型结构(组网)类型:
-    
-        - `Identify`: 占位符--不做任何操作, x=f(x)
-        - `DepthWise_Conv`: 深度卷积--每个通道分配单个卷积核并输出，in_channels=out_channels
-        - `PointWise_Conv`: 逐点卷积--1x1卷积
+ 
+        - `DepthWiseConv`: 深度卷积--每个通道分配单个卷积核并输出，in_channels=out_channels
+        - `PointWiseConv`: 逐点卷积--1x1卷积
         - `MLP`: 多层感知机
-        - `DY_ReLU`: 动态ReLU
+        - `DyReLU`: 动态ReLU
         - `Mobile`: MF中的Mobile卷积部分
         - `Attention`: 简单的普通注意力机制
         - `DropPath`: Path丢弃
@@ -151,16 +150,17 @@ The MobileNet line of work by PaddlePaddle
         - `ToFormer_Bridge`: 从Mobile到Former的桥
         - `ToMobile_Bridge`: 从Mobile到Former的桥
         - `Stem`: 渐入层
-        - `Lite_BottleNeck`: 轻量BottleNeck
+        - `BottleNeck`: BottleNeck -- 支持Lite类型
         - `Classifier_Head`: 分类头
-        - `Basic_Block`: MobileFormer最小实现单元
+        - `MFBlock`: MobileFormer最小实现单元
         - `MobileFormer`: 网络实现
     
     - 构建模型接口说明:
     
         - `MobileFormer`: 构建MobileFormer模型的基类
-            - 传入model_type: [`26m`, `52m`, `96m`, `151m`, `214m`, `294m`, `508m`],
+            - 传入`model_type`: [`26m`, `52m`, `96m`, `151m`, `214m`, `294m`, `508m`],
             - 生成对应的模型
+        - `check_model_size`: 检查模型参数量对比情况(与原论文)
     
     - 参数对齐情况:
         ```python
